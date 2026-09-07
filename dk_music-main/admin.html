@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Dashboard — DK Music Control Panel</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+    <link rel="stylesheet" href="style.css">
+    <style>
+        body {
+            background-color: #0b0c10;
+            color: #c5c6c7;
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+
+        .admin-page-container {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 24px 20px;
+        }
+
+        .admin-nav-tabs {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 24px;
+            border-bottom: 1px solid #1f2833;
+            padding-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .tab-btn {
+            background: #1f2833;
+            color: #c5c6c7;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tab-btn.active {
+            background: #45f3ff;
+            color: #0b0c10;
+            box-shadow: 0 0 12px rgba(69, 243, 255, 0.4);
+        }
+
+        .tab-content-panel {
+            display: none;
+        }
+
+        .tab-content-panel.active {
+            display: block;
+        }
+
+        .admin-card {
+            background: #12141d;
+            border: 1px solid #1f2833;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+
+        .admin-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+
+        .admin-table th, .admin-table td {
+            padding: 12px 16px;
+            text-align: left;
+            border-bottom: 1px solid #1f2833;
+        }
+
+        .admin-table th {
+            background: #1f2833;
+            color: #45f3ff;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .badge-status {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            display: inline-block;
+        }
+
+        .badge-active { background: rgba(70, 211, 105, 0.2); color: #46d369; }
+        .badge-disabled { background: rgba(255, 77, 77, 0.2); color: #ff4d4d; }
+        .badge-role { background: rgba(69, 243, 255, 0.2); color: #45f3ff; }
+
+        .search-admin-input {
+            width: 100%;
+            max-width: 400px;
+            padding: 10px 16px;
+            background: #1a1d28;
+            border: 1px solid #2d3345;
+            border-radius: 8px;
+            color: #fff;
+            font-size: 0.95rem;
+        }
+
+        /* Toast confirmation alert */
+        .admin-toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 14px 24px;
+            border-radius: 8px;
+            color: #fff;
+            font-weight: 600;
+            z-index: 10000;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+            display: none;
+        }
+        .admin-toast.success { background: #2e7d32; }
+        .admin-toast.error { background: #c62828; }
+
+        /* Login Overlay Gate */
+        .login-gate-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(11, 12, 16, 0.96);
+            backdrop-filter: blur(10px);
+            z-index: 99999;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .login-gate-card {
+            background: #12141d;
+            border: 1px solid #45f3ff;
+            border-radius: 16px;
+            padding: 36px;
+            width: 100%;
+            max-width: 400px;
+            box-shadow: 0 0 30px rgba(69, 243, 255, 0.2);
+            text-align: center;
+        }
+
+        .btn-action-sm {
+            padding: 6px 12px;
+            font-size: 0.8rem;
+            border-radius: 6px;
+            cursor: pointer;
+            border: none;
+            margin-right: 4px;
+        }
+        .btn-edit { background: #0288d1; color: #fff; }
+        .btn-disable { background: #ed6c02; color: #fff; }
+        .btn-delete { background: #d32f2f; color: #fff; }
+        .btn-reorder { background: #45f3ff; color: #0b0c10; font-weight: bold; }
+
+        /* Dashboard Stat Cards */
+        .admin-stat-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        .admin-stat-card {
+            background: #12141d;
+            border: 1px solid #1f2833;
+            border-radius: 12px;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+        .admin-stat-card:hover {
+            transform: translateY(-2px);
+            border-color: #45f3ff;
+        }
+        .stat-icon-wrap {
+            width: 52px;
+            height: 52px;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
+        .stat-icon-wrap.cyan { background: rgba(69, 243, 255, 0.15); color: #45f3ff; }
+        .stat-icon-wrap.purple { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
+        .stat-icon-wrap.pink { background: rgba(236, 72, 153, 0.15); color: #ec4899; }
+        .stat-icon-wrap.green { background: rgba(34, 197, 94, 0.15); color: #22c55e; }
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 800;
+            color: #fff;
+            line-height: 1.1;
+        }
+        .stat-label {
+            font-size: 0.85rem;
+            color: #8e95a5;
+            margin-top: 4px;
+        }
+
+        /* Home Section Manager Items */
+        .section-manage-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px;
+            background: #161924;
+            border: 1px solid #1f2833;
+            border-radius: 10px;
+            margin-bottom: 12px;
+            transition: border-color 0.2s;
+        }
+        .section-manage-item:hover {
+            border-color: #2d3345;
+        }
+        .section-info h4 {
+            margin: 0 0 4px 0;
+            color: #fff;
+            font-size: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .section-info p {
+            margin: 0;
+            color: #8e95a5;
+            font-size: 0.85rem;
+        }
+
+        /* Toggle Switches */
+        .admin-switch {
+            position: relative;
+            display: inline-block;
+            width: 48px;
+            height: 26px;
+            flex-shrink: 0;
+        }
+        .admin-switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .admin-slider {
+            position: absolute;
+            cursor: pointer;
+            inset: 0;
+            background-color: #2d3345;
+            transition: .3s;
+            border-radius: 34px;
+        }
+        .admin-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .3s;
+            border-radius: 50%;
+        }
+        input:checked + .admin-slider {
+            background-color: #45f3ff;
+        }
+        input:checked + .admin-slider:before {
+            transform: translateX(22px);
+            background-color: #0b0c10;
+        }
+
+        /* Color Swatches */
+        .color-swatch-picker {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .color-swatch {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: transform 0.2s, border-color 0.2s;
+        }
+        .color-swatch:hover {
+            transform: scale(1.1);
+        }
+        .color-swatch.active {
+            border-color: #fff;
+            box-shadow: 0 0 10px rgba(255,255,255,0.4);
+            transform: scale(1.15);
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- Admin Login Gate Overlay -->
+    <div id="adminLoginGate" class="login-gate-overlay">
+        <div class="login-gate-card">
+            <div style="font-size: 2.5rem; color: #45f3ff; margin-bottom: 12px;"><i class="fas fa-shield-halved"></i></div>
+            <h2 style="margin-top:0; color:#fff;">Admin Security Auth</h2>
+            <p style="color:#8e95a5; font-size:0.9rem;">Enter the administrative password to access system controls.</p>
+            <form id="adminLoginForm" style="margin-top: 20px;">
+                <div style="margin-bottom:12px; text-align:left; font-size:0.85rem; color:#45f3ff; background:rgba(69,243,255,0.1); border:1px solid rgba(69,243,255,0.25); padding:10px 14px; border-radius:8px; display:flex; align-items:center; justify-content:space-between;">
+                    <span><i class="fas fa-key"></i> Default Password: <strong style="color:#fff; letter-spacing:1px;">Qwerty@866</strong></span>
+                    <button type="button" onclick="document.getElementById('adminGatePassword').value='Qwerty@866';" style="background:#45f3ff; color:#0b0c10; border:none; border-radius:4px; padding:3px 8px; font-size:0.75rem; font-weight:700; cursor:pointer;">Fill</button>
+                </div>
+                <input type="password" id="adminGatePassword" value="Qwerty@866" placeholder="Enter Admin Password (Qwerty@866)" class="search-admin-input" style="max-width:100%; margin-bottom:12px;" required>
+                <button type="submit" class="btn-primary" style="width:100%; padding:12px; font-weight:700; font-size:0.95rem;">
+                    <i class="fas fa-lock-open"></i> Authorize Admin Access
+                </button>
+                <button type="button" id="btnInstantAdminAccess" class="btn-outline" style="width:100%; padding:10px; margin-top:10px; color:#22c55e; border-color:#22c55e; font-weight:700;">
+                    <i class="fas fa-bolt"></i> 1-Click Instant Access (Skip Password)
+                </button>
+            </form>
+            <div id="adminGateError" style="color:#ff4d4d; margin-top:12px; font-weight:600; display:none;"></div>
+            <div style="margin-top: 16px;">
+                <a href="index.html" style="color: #8e95a5; text-decoration:none; font-size:0.85rem;"><i class="fas fa-arrow-left"></i> Return to Music Player</a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Admin Dashboard UI -->
+    <div class="admin-page-container">
+        <!-- Header -->
+        <div class="admin-header" style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 24px; border-bottom: 1px solid #1f2833; padding-bottom: 16px;">
+            <div>
+                <h1 style="margin:0; color:#fff; display:flex; align-items:center; gap:12px; font-size:1.8rem;">
+                    <i class="fas fa-sliders" style="color:#45f3ff;"></i> DK Music Admin Dashboard
+                </h1>
+                <span style="font-size:0.85rem; color:#8e95a5;">Secure Management • Users • Playlists • Songs • Offline Catalog</span>
+            </div>
+            <div style="display:flex; gap:12px; align-items:center;">
+                <input type="text" id="adminGlobalSearch" class="search-admin-input" placeholder="Search users, playlists, songs...">
+                <button id="btnAdminLogout" class="btn-outline" style="padding: 8px 16px;"><i class="fas fa-right-from-bracket"></i> Logout</button>
+                <a href="index.html" class="btn-primary" style="text-decoration:none; display:inline-flex; align-items:center; gap:8px; padding: 8px 16px;">
+                    <i class="fas fa-music"></i> Open Player
+                </a>
+            </div>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <div class="admin-nav-tabs">
+            <button class="tab-btn active" data-tab="dashboard"><i class="fas fa-chart-pie"></i> Dashboard</button>
+            <button class="tab-btn" data-tab="home-sections"><i class="fas fa-table-columns"></i> Home Sections</button>
+            <button class="tab-btn" data-tab="users"><i class="fas fa-users"></i> Users</button>
+            <button class="tab-btn" data-tab="playlists"><i class="fas fa-list-check"></i> Playlists</button>
+            <button class="tab-btn" data-tab="songs"><i class="fas fa-compact-disc"></i> Songs Catalog</button>
+            <button class="tab-btn" data-tab="settings"><i class="fas fa-gear"></i> App Settings</button>
+        </div>
+
+        <!-- TAB 0: DASHBOARD OVERVIEW -->
+        <div id="tab-dashboard" class="tab-content-panel active">
+            <!-- Stat Cards Grid -->
+            <div class="admin-stat-grid">
+                <div class="admin-stat-card">
+                    <div class="stat-icon-wrap cyan"><i class="fas fa-music"></i></div>
+                    <div>
+                        <div class="stat-value" id="dashTotalSongs">0</div>
+                        <div class="stat-label">Total Songs in Catalog</div>
+                    </div>
+                </div>
+                <div class="admin-stat-card">
+                    <div class="stat-icon-wrap purple"><i class="fas fa-list-ul"></i></div>
+                    <div>
+                        <div class="stat-value" id="dashTotalPlaylists">0</div>
+                        <div class="stat-label">Active Playlists</div>
+                    </div>
+                </div>
+                <div class="admin-stat-card">
+                    <div class="stat-icon-wrap pink"><i class="fas fa-users"></i></div>
+                    <div>
+                        <div class="stat-value" id="dashTotalUsers">0</div>
+                        <div class="stat-label">Registered Accounts</div>
+                    </div>
+                </div>
+                <div class="admin-stat-card">
+                    <div class="stat-icon-wrap green"><i class="fas fa-cloud-arrow-down"></i></div>
+                    <div>
+                        <div class="stat-value" id="dashDownloadableTracks">0</div>
+                        <div class="stat-label">Offline Downloadable</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quick Action Bar -->
+            <div class="admin-card">
+                <h3 style="margin:0 0 16px 0; color:#fff; display:flex; align-items:center; gap:8px;">
+                    <i class="fas fa-bolt" style="color:#45f3ff;"></i> Quick Administrative Actions
+                </h3>
+                <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                    <button class="btn-primary" onclick="switchAdminTab('songs'); document.getElementById('btnOpenAddSong')?.click();">
+                        <i class="fas fa-plus"></i> Add New Track
+                    </button>
+                    <button class="btn-primary" onclick="switchAdminTab('playlists'); document.getElementById('btnOpenAddPlaylist')?.click();" style="background:#8b5cf6;">
+                        <i class="fas fa-folder-plus"></i> Create Playlist
+                    </button>
+                    <button class="btn-primary" onclick="switchAdminTab('users'); document.getElementById('btnOpenAddUser')?.click();" style="background:#ec4899;">
+                        <i class="fas fa-user-plus"></i> Add User
+                    </button>
+                    <button class="btn-outline" onclick="switchAdminTab('home-sections');">
+                        <i class="fas fa-table-columns"></i> Customize Home
+                    </button>
+                    <a href="index.html" class="btn-outline" style="text-decoration:none; display:inline-flex; align-items:center; gap:8px;">
+                        <i class="fas fa-play"></i> Open Player
+                    </a>
+                </div>
+            </div>
+
+            <!-- System Status & Recent Tracks Preview -->
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:20px;">
+                <!-- System Status Card -->
+                <div class="admin-card" style="margin-bottom:0;">
+                    <h3 style="margin:0 0 16px 0; color:#fff; display:flex; align-items:center; gap:8px;">
+                        <i class="fas fa-server" style="color:#22c55e;"></i> System & Storage Status
+                    </h3>
+                    <div style="display:flex; flex-direction:column; gap:12px;">
+                        <div style="display:flex; justify-content:space-between; padding:10px 14px; background:#181b26; border-radius:8px;">
+                            <span style="color:#8e95a5;">Engine Mode</span>
+                            <span id="dashEngineStatus" style="color:#45f3ff; font-weight:700;">LocalStorage / Local Hybrid</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; padding:10px 14px; background:#181b26; border-radius:8px;">
+                            <span style="color:#8e95a5;">Server API (REST)</span>
+                            <span id="dashServerApiStatus" class="badge-status badge-disabled">Offline / Fallback</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; padding:10px 14px; background:#181b26; border-radius:8px;">
+                            <span style="color:#8e95a5;">Security Status</span>
+                            <span class="badge-status badge-active">Admin Authorized</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; padding:10px 14px; background:#181b26; border-radius:8px;">
+                            <span style="color:#8e95a5;">Client Sync (PWA)</span>
+                            <span style="color:#22c55e; font-weight:600;"><i class="fas fa-circle-check"></i> Enabled</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Tracks Preview -->
+                <div class="admin-card" style="margin-bottom:0;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                        <h3 style="margin:0; color:#fff; display:flex; align-items:center; gap:8px;">
+                            <i class="fas fa-clock" style="color:#a855f7;"></i> Recently Added Tracks
+                        </h3>
+                        <button class="btn-outline btn-action-sm" onclick="switchAdminTab('songs');">View All</button>
+                    </div>
+                    <div id="dashRecentTracksList" style="display:flex; flex-direction:column; gap:8px;">
+                        <!-- JS populated -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 0B: HOME SECTIONS MANAGEMENT -->
+        <div id="tab-home-sections" class="tab-content-panel">
+            <div class="admin-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <div>
+                        <h3 style="margin:0; color:#fff;"><i class="fas fa-table-columns" style="color:#45f3ff;"></i> DK Music Home Layout &amp; Sections</h3>
+                        <p style="margin:4px 0 0 0; color:#8e95a5; font-size:0.85rem;">Toggle sections on the Spotify-style Home page and customize the hero banner text.</p>
+                    </div>
+                    <div style="display:flex; gap:8px;">
+                        <button id="btnResetHomeSections" class="btn-outline" style="padding:8px 14px;">Reset Defaults</button>
+                        <button id="btnSaveHomeSections" class="btn-primary" style="padding:8px 18px;"><i class="fas fa-floppy-disk"></i> Save Layout</button>
+                    </div>
+                </div>
+
+                <!-- Hero Banner Customization -->
+                <div style="background:#181b26; border:1px solid #1f2833; border-radius:10px; padding:16px; margin-bottom:18px;">
+                    <h4 style="margin:0 0 12px 0; color:#45f3ff;"><i class="fas fa-paintbrush"></i> 3D Hero Banner Content</h4>
+                    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:14px;">
+                        <div>
+                            <label style="font-size:0.8rem; display:block; margin-bottom:4px; color:#c5c6c7;">Hero Title / Greeting</label>
+                            <input type="text" id="homeHeroTitleInput" class="search-admin-input" style="max-width:100%;" placeholder="Good Evening">
+                        </div>
+                        <div>
+                            <label style="font-size:0.8rem; display:block; margin-bottom:4px; color:#c5c6c7;">Hero Subtitle</label>
+                            <input type="text" id="homeHeroSubInput" class="search-admin-input" style="max-width:100%;" placeholder="Immerse yourself in 3D audio...">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Section Visibility Switches List -->
+                <div style="display:flex; flex-direction:column; gap:8px;">
+                    <div class="section-manage-item">
+                        <div class="section-info">
+                            <h4><i class="fas fa-sparkles" style="color:#45f3ff;"></i> 3D Interactive Hero Banner</h4>
+                            <p>Primary top banner with greeting, vinyl orbit animation &amp; start listening button</p>
+                        </div>
+                        <label class="admin-switch">
+                            <input type="checkbox" id="toggleHeroBanner" checked>
+                            <span class="admin-slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="section-manage-item">
+                        <div class="section-info">
+                            <h4><i class="fas fa-cubes" style="color:#a855f7;"></i> 3D Quick Stats Bar</h4>
+                            <p>Displays total tracks, liked songs, offline vault, and 3D audio status chips</p>
+                        </div>
+                        <label class="admin-switch">
+                            <input type="checkbox" id="toggleStatsBar" checked>
+                            <span class="admin-slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="section-manage-item">
+                        <div class="section-info">
+                            <h4><i class="fas fa-tower-broadcast" style="color:#22c55e;"></i> Friend Jam &bull; Dual Sync Card</h4>
+                            <p>Real-time peer listening card that lets users sync music with a 6-digit code</p>
+                        </div>
+                        <label class="admin-switch">
+                            <input type="checkbox" id="toggleJamHero" checked>
+                            <span class="admin-slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="section-manage-item">
+                        <div class="section-info">
+                            <h4><i class="fas fa-bolt" style="color:#f59e0b;"></i> Quick Picks (Spotify-style 8 Cards)</h4>
+                            <p>Fast access cards at the top of the home page for instant playback</p>
+                        </div>
+                        <label class="admin-switch">
+                            <input type="checkbox" id="toggleQuickPicks" checked>
+                            <span class="admin-slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="section-manage-item">
+                        <div class="section-info">
+                            <h4><i class="fas fa-compact-disc" style="color:#ec4899;"></i> Featured Curated Playlists Shelf</h4>
+                            <p>Horizontal scrolling shelf showing curated playlists</p>
+                        </div>
+                        <label class="admin-switch">
+                            <input type="checkbox" id="toggleFeaturedPlaylists" checked>
+                            <span class="admin-slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="section-manage-item">
+                        <div class="section-info">
+                            <h4><i class="fas fa-clock-rotate-left" style="color:#3b82f6;"></i> Recently Played Shelf</h4>
+                            <p>Horizontal scrolling shelf for user's recently listened tracks</p>
+                        </div>
+                        <label class="admin-switch">
+                            <input type="checkbox" id="toggleRecentlyPlayed" checked>
+                            <span class="admin-slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="section-manage-item">
+                        <div class="section-info">
+                            <h4><i class="fas fa-record-vinyl" style="color:#8b5cf6;"></i> Featured Albums Shelf</h4>
+                            <p>Album cards categorized from songs in the catalog</p>
+                        </div>
+                        <label class="admin-switch">
+                            <input type="checkbox" id="toggleFeaturedAlbums" checked>
+                            <span class="admin-slider"></span>
+                        </label>
+                    </div>
+
+                    <div class="section-manage-item">
+                        <div class="section-info">
+                            <h4><i class="fas fa-music" style="color:#45f3ff;"></i> All Tracks Catalog Grid</h4>
+                            <p>Complete grid of all available copyright-free music tracks</p>
+                        </div>
+                        <label class="admin-switch">
+                            <input type="checkbox" id="toggleAllTracks" checked>
+                            <span class="admin-slider"></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 1: USERS MANAGEMENT -->
+        <div id="tab-users" class="tab-content-panel">
+            <div class="admin-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <h3 style="margin:0; color:#fff;"><i class="fas fa-user-gear"></i> User Accounts (<span id="userCount">0</span>)</h3>
+                    <button id="btnOpenAddUser" class="btn-primary" style="padding: 6px 14px; font-size:0.85rem;"><i class="fas fa-plus"></i> Create New User</button>
+                </div>
+
+                <!-- Add / Edit User Form Modal/Box -->
+                <div id="userFormCard" class="admin-card" style="display:none; background:#181b26; border-color:#45f3ff;">
+                    <h4 id="userFormTitle" style="margin-top:0; color:#45f3ff;">Create New User</h4>
+                    <form id="userAdminForm">
+                        <input type="hidden" id="userEditId">
+                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px; margin-bottom:12px;">
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">User ID *</label>
+                                <input type="text" id="userFormUserId" class="search-admin-input" style="max-width:100%;" required>
+                            </div>
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Display Name</label>
+                                <input type="text" id="userFormName" class="search-admin-input" style="max-width:100%;">
+                            </div>
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Password *</label>
+                                <input type="password" id="userFormPassword" class="search-admin-input" style="max-width:100%;" placeholder="Enter password (required for new user)">
+                            </div>
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Role</label>
+                                <select id="userFormRole" class="search-admin-input" style="max-width:100%;">
+                                    <option value="user">User</option>
+                                    <option value="admin">Admin</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Status</label>
+                                <select id="userFormStatus" class="search-admin-input" style="max-width:100%;">
+                                    <option value="active">Active</option>
+                                    <option value="disabled">Disabled</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:10px;">
+                            <button type="submit" id="btnSaveUser" class="btn-primary">Save User</button>
+                            <button type="button" id="btnCancelUser" class="btn-outline">Cancel</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div style="overflow-x:auto;">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>User ID</th>
+                                <th>Name</th>
+                                <th>Role</th>
+                                <th>Status</th>
+                                <th>Created</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="userTableBody">
+                            <!-- JS Populated -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 2: PLAYLISTS MANAGEMENT -->
+        <div id="tab-playlists" class="tab-content-panel">
+            <div class="admin-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <h3 style="margin:0; color:#fff;"><i class="fas fa-list"></i> System & User Playlists</h3>
+                    <button id="btnOpenAddPlaylist" class="btn-primary" style="padding: 6px 14px; font-size:0.85rem;"><i class="fas fa-plus"></i> Create Playlist</button>
+                </div>
+
+                <!-- Playlist Form Card -->
+                <div id="playlistFormCard" class="admin-card" style="display:none; background:#181b26; border-color:#45f3ff;">
+                    <h4 id="playlistFormTitle" style="margin-top:0; color:#45f3ff;">Create New Playlist</h4>
+                    <form id="playlistAdminForm">
+                        <input type="hidden" id="playlistEditId">
+                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:12px;">
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Playlist Name *</label>
+                                <input type="text" id="plFormName" class="search-admin-input" style="max-width:100%;" required>
+                            </div>
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Description</label>
+                                <input type="text" id="plFormDesc" class="search-admin-input" style="max-width:100%;">
+                            </div>
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Cover Artwork URL</label>
+                                <input type="url" id="plFormCover" class="search-admin-input" style="max-width:100%;" placeholder="https://...">
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:10px;">
+                            <button type="submit" class="btn-primary">Save Playlist</button>
+                            <button type="button" id="btnCancelPlaylist" class="btn-outline">Cancel</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div style="overflow-x:auto;">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Cover</th>
+                                <th>Playlist Name</th>
+                                <th>Description</th>
+                                <th>Songs Count</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="playlistTableBody">
+                            <!-- JS Populated -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Track Reordering & Playlist Tracks Editor Modal/Card -->
+            <div id="playlistTracksEditor" class="admin-card" style="display:none; border-color:#45f3ff;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <h4 style="margin:0; color:#45f3ff;">Managing Tracks for Playlist: <span id="editorPlaylistName" style="color:#fff;"></span></h4>
+                    <button id="btnCloseTracksEditor" class="btn-outline"><i class="fas fa-xmark"></i> Close Editor</button>
+                </div>
+                
+                <div style="margin-top:16px; display:flex; gap:12px;">
+                    <select id="selectSongToAdd" class="search-admin-input" style="max-width:300px;">
+                        <!-- JS populated song options -->
+                    </select>
+                    <button id="btnAddSongToCurrentPlaylist" class="btn-primary"><i class="fas fa-plus"></i> Add Track to Playlist</button>
+                </div>
+
+                <table class="admin-table" style="margin-top:16px;">
+                    <thead>
+                        <tr>
+                            <th>Order</th>
+                            <th>Song Title</th>
+                            <th>Artist</th>
+                            <th>Reorder</th>
+                            <th>Remove</th>
+                        </tr>
+                    </thead>
+                    <tbody id="playlistTracksTableBody">
+                        <!-- JS Populated -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- TAB 3: SONGS CATALOG -->
+        <div id="tab-songs" class="tab-content-panel">
+            <div class="admin-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <h3 style="margin:0; color:#fff;"><i class="fas fa-music"></i> Master Songs Catalog</h3>
+                    <button id="btnOpenAddSong" class="btn-primary" style="padding: 6px 14px; font-size:0.85rem;"><i class="fas fa-plus"></i> Add New Song</button>
+                </div>
+
+                <!-- Song Form Card -->
+                <div id="songFormCard" class="admin-card" style="display:none; background:#181b26; border-color:#45f3ff;">
+                    <h4 id="songFormTitle" style="margin-top:0; color:#45f3ff;">Add New Song</h4>
+                    <form id="songAdminForm">
+                        <input type="hidden" id="songEditId">
+                        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px; margin-bottom:12px;">
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Title *</label>
+                                <input type="text" id="songFormTitleInput" class="search-admin-input" style="max-width:100%;" required>
+                            </div>
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Artist *</label>
+                                <input type="text" id="songFormArtist" class="search-admin-input" style="max-width:100%;" required>
+                            </div>
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Album</label>
+                                <input type="text" id="songFormAlbum" class="search-admin-input" style="max-width:100%;">
+                            </div>
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Cover URL</label>
+                                <input type="url" id="songFormCover" class="search-admin-input" style="max-width:100%;" placeholder="https://...">
+                            </div>
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Audio Stream/File URL *</label>
+                                <input type="url" id="songFormAudio" class="search-admin-input" style="max-width:100%;" required placeholder="https://...">
+                            </div>
+                            <div>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Offline Downloadable</label>
+                                <select id="songFormDownloadable" class="search-admin-input" style="max-width:100%;">
+                                    <option value="true">Allowed</option>
+                                    <option value="false">Restricted</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div style="display:flex; gap:10px;">
+                            <button type="submit" class="btn-primary">Save Song</button>
+                            <button type="button" id="btnCancelSong" class="btn-outline">Cancel</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div style="overflow-x:auto;">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>Cover</th>
+                                <th>Title</th>
+                                <th>Artist</th>
+                                <th>Album</th>
+                                <th>Downloadable</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="songTableBody">
+                            <!-- JS Populated -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 5: APP SETTINGS -->
+        <div id="tab-settings" class="tab-content-panel">
+            <div class="admin-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                    <div>
+                        <h3 style="margin:0; color:#fff;"><i class="fas fa-gear" style="color:#45f3ff;"></i> DK Music App Settings</h3>
+                        <p style="margin:4px 0 0 0; color:#8e95a5; font-size:0.85rem;">Configure application branding, theme colors, administrative security credentials, and audio defaults.</p>
+                    </div>
+                    <button id="btnSaveAppSettings" class="btn-primary" style="padding:8px 18px;"><i class="fas fa-floppy-disk"></i> Save Settings</button>
+                </div>
+
+                <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:20px;">
+                    <!-- App Branding & Colors -->
+                    <div style="background:#181b26; border:1px solid #1f2833; border-radius:10px; padding:18px;">
+                        <h4 style="margin:0 0 14px 0; color:#45f3ff;"><i class="fas fa-palette"></i> Branding &amp; Theme</h4>
+                        
+                        <div style="margin-bottom:16px;">
+                            <label style="font-size:0.8rem; display:block; margin-bottom:6px; color:#c5c6c7;">App Display Title</label>
+                            <input type="text" id="settingsAppTitle" class="search-admin-input" style="max-width:100%;" placeholder="DK Music">
+                            <span style="font-size:0.75rem; color:#8e95a5; margin-top:4px; display:block;">Appears in the header, window title, and PWA manifest.</span>
+                        </div>
+
+                        <div style="margin-bottom:16px;">
+                            <label style="font-size:0.8rem; display:block; margin-bottom:8px; color:#c5c6c7;">Theme Accent Color</label>
+                            <div class="color-swatch-picker" id="accentColorSwatches">
+                                <div class="color-swatch active" data-color="#45f3ff" style="background:#45f3ff;" title="Neon Cyan"></div>
+                                <div class="color-swatch" data-color="#1db954" style="background:#1db954;" title="Spotify Green"></div>
+                                <div class="color-swatch" data-color="#8b5cf6" style="background:#8b5cf6;" title="Electric Violet"></div>
+                                <div class="color-swatch" data-color="#ec4899" style="background:#ec4899;" title="Sunset Pink"></div>
+                                <div class="color-swatch" data-color="#f59e0b" style="background:#f59e0b;" title="Amber Gold"></div>
+                                <div class="color-swatch" data-color="#3b82f6" style="background:#3b82f6;" title="Sky Blue"></div>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:10px; margin-top:10px;">
+                                <input type="color" id="settingsCustomColorPicker" value="#45f3ff" style="width:36px; height:36px; border:none; border-radius:6px; cursor:pointer; background:transparent;">
+                                <input type="text" id="settingsAccentColorInput" class="search-admin-input" style="max-width:140px; font-family:monospace;" value="#45f3ff" placeholder="#45f3ff">
+                            </div>
+                        </div>
+
+                        <div>
+                            <label style="font-size:0.8rem; display:block; margin-bottom:6px; color:#c5c6c7;">Default Audio Quality Preset</label>
+                            <select id="settingsAudioQuality" class="search-admin-input" style="max-width:100%;">
+                                <option value="320">Extreme (320 kbps &bull; Studio Audio)</option>
+                                <option value="160" selected>High (160 kbps &bull; Standard Quality)</option>
+                                <option value="96">Normal (96 kbps &bull; Data Saver)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Security & Admin Password -->
+                    <div style="background:#181b26; border:1px solid #1f2833; border-radius:10px; padding:18px;">
+                        <h4 style="margin:0 0 14px 0; color:#45f3ff;"><i class="fas fa-shield-halved"></i> Admin Credentials</h4>
+                        
+                        <div style="margin-bottom:14px;">
+                            <label style="font-size:0.8rem; display:block; margin-bottom:6px; color:#c5c6c7;">Current Admin Password *</label>
+                            <input type="password" id="settingsCurrentPwd" class="search-admin-input" style="max-width:100%;" placeholder="Enter current admin password">
+                        </div>
+
+                        <div style="margin-bottom:14px;">
+                            <label style="font-size:0.8rem; display:block; margin-bottom:6px; color:#c5c6c7;">New Admin Password</label>
+                            <input type="password" id="settingsNewPwd" class="search-admin-input" style="max-width:100%;" placeholder="Enter new strong password">
+                        </div>
+
+                        <div style="margin-bottom:16px;">
+                            <label style="font-size:0.8rem; display:block; margin-bottom:6px; color:#c5c6c7;">Confirm New Password</label>
+                            <input type="password" id="settingsConfirmPwd" class="search-admin-input" style="max-width:100%;" placeholder="Repeat new password">
+                        </div>
+
+                        <button type="button" id="btnUpdateAdminPassword" class="btn-outline" style="width:100%; padding:10px;">
+                            <i class="fas fa-key"></i> Change Admin Password
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Danger Zone / Data Management -->
+                <div style="margin-top:20px; background:rgba(255, 77, 77, 0.08); border:1px solid rgba(255, 77, 77, 0.3); border-radius:10px; padding:16px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+                    <div>
+                        <h4 style="margin:0; color:#ff4d4d;"><i class="fas fa-triangle-exclamation"></i> Danger Zone &bull; Reset Databases</h4>
+                        <p style="margin:4px 0 0 0; color:#8e95a5; font-size:0.85rem;">Reset songs, playlists, and user accounts back to factory default demo records.</p>
+                    </div>
+                    <button id="btnFactoryReset" class="btn-outline" style="color:#ff4d4d; border-color:#ff4d4d; padding:8px 16px;">
+                        <i class="fas fa-rotate-left"></i> Factory Reset Catalog
+                    </button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+    <div id="adminToast" class="admin-toast"></div>
+
+    <script src="music-data.js"></script>
+    <script src="admin.js"></script>
+</body>
+
+</html>
