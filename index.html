@@ -1047,7 +1047,12 @@
     </div>
 
     <!-- Scripts -->
-    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <script src="node_modules/@supabase/supabase-js/dist/umd/supabase.js"></script>
+    <script>
+        if (!window.supabase || typeof window.supabase.createClient !== 'function') {
+            document.write('<script src="https://unpkg.com/@supabase/supabase-js@2"><\/script>');
+        }
+    </script>
     <script src="supabase-client.js"></script>
     <script src="music-data.js"></script>
     <script src="offline-db.js"></script>

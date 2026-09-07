@@ -105,8 +105,11 @@ function Check-IsAdminToken($context) {
     return $false
 }
 
-# Load .env file if present
+# Load .env file if present (checks root and data/.env)
 $envFile = Join-Path $path ".env"
+if (-not (Test-Path $envFile)) {
+    $envFile = Join-Path $dataDir ".env"
+}
 if (Test-Path $envFile) {
     Get-Content $envFile | ForEach-Object {
         $line = $_.Trim()
@@ -140,6 +143,20 @@ try {
         if ($httpMethod -eq "OPTIONS") {
             $context.Response.StatusCode = 200
             $context.Response.Close()
+            continue
+        }
+
+        # ── 0. PUBLIC SUPABASE CONFIG ENDPOINT (Safe - Anon key only) ──
+        if ($requestUrl -eq "/api/supabase-config" -and $httpMethod -eq "GET") {
+            $sbUrl = [System.Environment]::GetEnvironmentVariable("SUPABASE_URL")
+            $sbKey = [System.Environment]::GetEnvironmentVariable("SUPABASE_ANON_KEY")
+            if (-not $sbKey) {
+                $sbKey = [System.Environment]::GetEnvironmentVariable("SUPABASE_PUBLISHABLE_KEY")
+            }
+            Send-JsonResponse $context @{
+                supabaseUrl = $sbUrl
+                supabaseAnonKey = $sbKey
+            } 200
             continue
         }
 
@@ -531,6 +548,14 @@ try {
         if ($requestUrl -eq "/admin" -or $requestUrl -eq "/admin/") { $requestUrl = "/admin.html" }
         if ($requestUrl -eq "/" -or $requestUrl -eq "") { $requestUrl = "/index.html" }
         $cleanUrl = $requestUrl.TrimStart('/')
+
+        # Block any direct requests to sensitive .env files
+        if ($cleanUrl -match '(?i)(^|[\\/])\.env') {
+            $context.Response.StatusCode = 403
+            $context.Response.Close()
+            continue
+        }
+
         $filePath = Join-Path $path $cleanUrl
 
         try {
