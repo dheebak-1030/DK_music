@@ -76,23 +76,7 @@
 
     // 3. In browser environment: try loading from server or local .env synchronously
     if (typeof XMLHttpRequest !== 'undefined') {
-      // 3a. Try backend endpoint /api/supabase-config (from server.ps1)
-      try {
-        const xhr = new XMLHttpRequest();
-        xhr.open('GET', '/api/supabase-config', false); // synchronous for immediate initialization
-        xhr.send(null);
-        if (xhr.status === 200) {
-          const apiData = JSON.parse(xhr.responseText);
-          if (apiData && apiData.supabaseUrl && apiData.supabaseAnonKey) {
-            return {
-              supabaseUrl: apiData.supabaseUrl.trim(),
-              supabaseAnonKey: apiData.supabaseAnonKey.trim()
-            };
-          }
-        }
-      } catch (_) {}
-
-      // 3b. Try fetching local .env file (if running via static server / Live Server)
+      // 3. Try fetching local .env file (if running via static server / Live Server)
       const envPaths = ['.env', 'data/.env', '/.env', '/data/.env'];
       for (const path of envPaths) {
         try {
@@ -102,7 +86,7 @@
           if (xhr.status === 200 && xhr.responseText) {
             const parsed = parseEnvSafely(xhr.responseText);
             const url = parsed.SUPABASE_URL || parsed.VITE_SUPABASE_URL;
-            const key = parsed.SUPABASE_ANON_KEY || parsed.SUPABASE_PUBLISHABLE_KEY || parsed.VITE_SUPABASE_ANON_KEY;
+            const key = parsed.SUPABASE_ANON_KEY || parsed.SUPABASE_PUBLISHABLE_KEY || parsed.VITE_SUPABASE_PUBLISHABLE_KEY || parsed.VITE_SUPABASE_ANON_KEY;
             if (url && key) {
               return { supabaseUrl: url.trim(), supabaseAnonKey: key.trim() };
             }
@@ -113,8 +97,8 @@
 
     // 4. Fallback defaults
     return {
-      supabaseUrl: 'https://rzmjljpmtrrjpkhmncbu.supabase.co',
-      supabaseAnonKey: 'sb_publishable_DsKVLUCCh9xM-YhE5RnR8A_f4ke_HEf'
+      supabaseUrl: 'https://brufxavwnnzcpchtfiqg.supabase.co',
+      supabaseAnonKey: 'sb_publishable_qq1F4EnE3h6f9o_V5WxpTw_RJAZrsJb'
     };
   }
 

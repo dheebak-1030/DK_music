@@ -453,7 +453,10 @@
       }
     }
 
-    btnOpenJamModal?.addEventListener('click', () => openModal('host'));
+    btnOpenJamModal?.addEventListener('click', () => {
+      openModal('host');
+      if (!currentRoomCode) startHostSession();
+    });
     btnHeroHostRoom?.addEventListener('click', () => {
       openModal('host');
       if (!currentRoomCode) startHostSession();
