@@ -437,15 +437,8 @@ function renderDashboard() {
     if (elTotalUsers) elTotalUsers.textContent = totalUsers;
     if (elDlTracks) elDlTracks.textContent = dlTracks;
 
-    if (elServerApi) {
-        if (isServerOnline) {
-            elServerApi.textContent = 'Online / Connected';
-            elServerApi.className = 'badge-status badge-active';
-        } else {
-            elServerApi.textContent = 'Offline / Local Fallback';
-            elServerApi.className = 'badge-status badge-disabled';
-        }
-    }
+    // Update server/storage status badges with real Supabase check
+    checkAndRenderStorageStatus();
 
     if (elRecentList) {
         const recent = songsData.slice(-5).reverse();
@@ -470,7 +463,54 @@ function renderDashboard() {
     }
 }
 
-// ── 0B. HOME SECTIONS MANAGER ────────────────────────────────
+// ── Real Supabase Status Checker ────────────────────────────
+
+async function checkAndRenderStorageStatus() {
+    const storageEl = document.getElementById('dashStorageStatus');
+    const dbEl = document.getElementById('dashDBStatus');
+
+    if (!storageEl && !dbEl) return;
+
+    // Quick check: is Supabase client available?
+    const client = window.supabaseClient || window.__supabaseClientInstance;
+    if (!client) {
+        if (storageEl) storageEl.innerHTML = '<span class="badge-status badge-disabled">No Client</span>';
+        if (dbEl) dbEl.innerHTML = '<span class="badge-status badge-disabled">Not Connected</span>';
+        return;
+    }
+
+    // Use DK_CloudStorage helper if available, otherwise do direct checks
+    if (window.DK_CloudStorage && typeof window.DK_CloudStorage.checkStorageStatus === 'function') {
+        try {
+            const status = await window.DK_CloudStorage.checkStorageStatus();
+
+            if (storageEl) {
+                if (status.storageConnected) {
+                    storageEl.innerHTML = '<i class="fas fa-circle-check" style="color:#22c55e;"></i> <span style="color:#22c55e;">Supabase Cloud</span>';
+                } else {
+                    storageEl.innerHTML = '<i class="fas fa-circle-check" style="color:#45f3ff;"></i> <span style="color:#45f3ff;">Supabase Connected</span>';
+                }
+            }
+
+            if (dbEl) {
+                if (status.dbConnected) {
+                    dbEl.innerHTML = '<i class="fas fa-circle-check" style="color:#22c55e;"></i> <span style="color:#22c55e;">Supabase Database</span>';
+                } else {
+                    dbEl.innerHTML = '<i class="fas fa-circle-check" style="color:#45f3ff;"></i> <span style="color:#45f3ff;">Supabase (LocalStorage cache)</span>';
+                }
+            }
+        } catch (e) {
+            if (storageEl) storageEl.innerHTML = '<span class="badge-status badge-disabled">Check Failed</span>';
+            if (dbEl) dbEl.innerHTML = '<span class="badge-status badge-disabled">Check Failed</span>';
+        }
+    } else {
+        // Fallback: client exists
+        if (storageEl) storageEl.innerHTML = '<i class="fas fa-circle-check" style="color:#45f3ff;"></i> <span style="color:#45f3ff;">Supabase Cloud</span>';
+        if (dbEl) dbEl.innerHTML = '<i class="fas fa-circle-check" style="color:#45f3ff;"></i> <span style="color:#45f3ff;">Supabase Database</span>';
+    }
+}
+
+
 
 const DEFAULT_HOME_SECTIONS = {
     heroBanner: true,
@@ -881,18 +921,38 @@ playlistAdminForm?.addEventListener('submit', async (e) => {
     };
 
     try {
-        if (id) {
-            body.id = id;
-            await adminFetch('/api/admin/playlists', 'PUT', body);
-            showAdminToast(`✓ Playlist '${body.name}' updated!`);
-        } else {
-            await adminFetch('/api/admin/playlists', 'POST', body);
-            showAdminToast(`✓ Playlist '${body.name}' created!`);
+        const id = playlistEditId.value;
+        const body = {
+            name: plFormName.value.trim(),
+            description: plFormDesc.value.trim(),
+            cover: plFormCover.value.trim()
+        };
+
+        try {
+            if (id) {
+                body.id = id;
+                await adminFetch('/api/admin/playlists', 'PUT', body);
+                // Sync to Supabase cloud
+                if (window.DK_CloudStorage) {
+                    const pl = playlistsData.find(p => p.id === id) || {};
+                    await window.DK_CloudStorage.upsertPlaylistToDB({ ...pl, ...body }).catch(console.warn);
+                }
+                showAdminToast(`✓ Playlist '${body.name}' updated!`);
+            } else {
+                const result = await adminFetch('/api/admin/playlists', 'POST', body);
+                // Sync to Supabase cloud
+                if (window.DK_CloudStorage && result && result.playlist) {
+                    await window.DK_CloudStorage.upsertPlaylistToDB(result.playlist).catch(console.warn);
+                }
+                showAdminToast(`✓ Playlist '${body.name}' created!`);
+            }
+            playlistFormCard.style.display = 'none';
+            await fetchPlaylists();
+        } catch (err) {
+            showAdminToast('Failed to save playlist: ' + err.message, true);
         }
-        playlistFormCard.style.display = 'none';
-        await fetchPlaylists();
-    } catch (err) {
-        showAdminToast('Failed to save playlist: ' + err.message, true);
+    } catch(outerErr) {
+        showAdminToast('Unexpected error: ' + outerErr.message, true);
     }
 });
 
@@ -912,6 +972,10 @@ window.deletePlaylist = async function(id) {
     if (!confirm('Are you sure you want to delete this playlist?')) return;
     try {
         await adminFetch('/api/admin/playlists', 'DELETE', { id });
+        // Also remove from Supabase cloud
+        if (window.DK_CloudStorage) {
+            await window.DK_CloudStorage.deletePlaylistFromDB(id).catch(console.warn);
+        }
         showAdminToast('Playlist deleted.');
         await fetchPlaylists();
     } catch (err) {
@@ -978,18 +1042,21 @@ function renderPlaylistTracksTable() {
 
 document.getElementById('btnAddSongToCurrentPlaylist')?.addEventListener('click', async () => {
     if (!activeEditingPlaylist) return;
-    const songId = selectSongToAdd.value;
+    const songId = selectSongToAdd ? selectSongToAdd.value : '';
     if (!songId) {
         showAdminToast('Please select a song to add.', true);
         return;
     }
-
-    const songs = activeEditingPlaylist.songs ? [...activeEditingPlaylist.songs] : [];
+    const songs = [...(activeEditingPlaylist.songs || [])];
     songs.push(songId);
 
     try {
         await adminFetch('/api/admin/playlists', 'PUT', { id: activeEditingPlaylist.id, songs });
         activeEditingPlaylist.songs = songs;
+        // Sync to cloud
+        if (window.DK_CloudStorage) {
+            await window.DK_CloudStorage.upsertPlaylistToDB({ ...activeEditingPlaylist, songs }).catch(console.warn);
+        }
         showAdminToast('✓ Track added to playlist!');
         renderPlaylistTracksTable();
         await fetchPlaylists();
@@ -1105,28 +1172,114 @@ function renderSongsTable(songs) {
 songAdminForm?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const id = songEditId.value;
-    const body = {
-        title: songFormTitleInput.value.trim(),
-        artist: songFormArtist.value.trim(),
-        album: songFormAlbum.value.trim(),
-        cover_url: songFormCover.value.trim(),
-        audio_url: songFormAudio.value.trim(),
-        downloadable: songFormDownloadable.value === 'true'
-    };
+
+    const titleVal = songFormTitleInput.value.trim();
+    const artistVal = songFormArtist.value.trim();
+    const albumVal = songFormAlbum.value.trim();
+    let coverUrl = songFormCover ? songFormCover.value.trim() : '';
+    let audioUrl = songFormAudio ? songFormAudio.value.trim() : '';
+    const downloadable = songFormDownloadable ? songFormDownloadable.value === 'true' : true;
+
+    const audioFileInput = document.getElementById('songFormAudioFile');
+    const coverFileInput = document.getElementById('songFormCoverFile');
+    const progressEl = document.getElementById('songUploadProgress');
+    const saveBtn = document.getElementById('btnSaveSong');
+
+    // Validate: need either URL or file for audio (only for new songs)
+    if (!id && !audioUrl && !(audioFileInput && audioFileInput.files && audioFileInput.files[0])) {
+        showAdminToast('Please provide an audio URL or upload an audio file.', true);
+        return;
+    }
+
+    // Disable button during upload
+    if (saveBtn) { saveBtn.disabled = true; saveBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...'; }
 
     try {
+        // Generate song ID for new songs (needed for storage path)
+        const songId = id || ('song_' + Date.now());
+
+        // 1. Upload audio file if selected
+        if (audioFileInput && audioFileInput.files && audioFileInput.files[0]) {
+            const audioFile = audioFileInput.files[0];
+            if (progressEl) { progressEl.style.display = 'block'; progressEl.textContent = 'Uploading audio to Supabase Cloud Storage...'; }
+
+            try {
+                if (!window.DK_CloudStorage) throw new Error('Cloud storage not loaded');
+                audioUrl = await window.DK_CloudStorage.uploadAudioFile(
+                    audioFile,
+                    songId,
+                    function(pct, msg) {
+                        if (progressEl) progressEl.textContent = (msg || 'Uploading...') + (pct < 100 ? ' (' + pct + '%)' : '');
+                    }
+                );
+                if (progressEl) progressEl.textContent = '✓ Audio uploaded to Supabase Cloud!';
+            } catch (uploadErr) {
+                console.warn('[Admin] Audio upload failed, using URL fallback:', uploadErr);
+                if (progressEl) progressEl.textContent = '⚠ Cloud upload failed. Please use a URL instead.';
+                if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-floppy-disk"></i> Save Song'; }
+                showAdminToast('Audio upload failed: ' + uploadErr.message, true);
+                return;
+            }
+        }
+
+        // 2. Upload cover image if selected
+        if (coverFileInput && coverFileInput.files && coverFileInput.files[0]) {
+            const coverFile = coverFileInput.files[0];
+            if (progressEl) { progressEl.style.display = 'block'; progressEl.textContent = 'Uploading cover artwork...'; }
+
+            try {
+                if (!window.DK_CloudStorage) throw new Error('Cloud storage not loaded');
+                coverUrl = await window.DK_CloudStorage.uploadCoverImage(
+                    coverFile,
+                    songId,
+                    function(pct, msg) {
+                        if (progressEl) progressEl.textContent = (msg || 'Uploading...') + ' (artwork)';
+                    }
+                );
+                if (progressEl) progressEl.textContent = '✓ Artwork uploaded to Supabase Cloud!';
+            } catch (err) {
+                console.warn('[Admin] Cover upload failed, using URL:', err);
+            }
+        }
+
+        const body = {
+            title: titleVal,
+            artist: artistVal,
+            album: albumVal,
+            cover_url: coverUrl,
+            audio_url: audioUrl,
+            downloadable: downloadable
+        };
+
         if (id) {
             body.id = id;
             await adminFetch('/api/admin/songs', 'PUT', body);
-            showAdminToast(`✓ Song '${body.title}' updated!`);
+            // Sync to Supabase DB
+            if (window.DK_CloudStorage) {
+                await window.DK_CloudStorage.upsertSongToDB({ ...body, id, file_url: audioUrl }).catch(console.warn);
+            }
+            showAdminToast('✓ Song \'' + titleVal + '\' updated!');
         } else {
-            await adminFetch('/api/admin/songs', 'POST', body);
-            showAdminToast(`✓ Song '${body.title}' added!`);
+            body.id = songId; // pass pre-generated ID
+            const result = await adminFetch('/api/admin/songs', 'POST', body);
+            // Sync to Supabase DB (use the returned id if available)
+            if (window.DK_CloudStorage) {
+                const savedId = (result && result.song && result.song.id) ? result.song.id : songId;
+                await window.DK_CloudStorage.upsertSongToDB({ ...body, id: savedId, file_url: audioUrl }).catch(console.warn);
+            }
+            showAdminToast('✓ Song \'' + titleVal + '\' added to cloud catalog!');
         }
+
+        if (progressEl) { setTimeout(() => { progressEl.style.display = 'none'; }, 3000); }
+        if (audioFileInput) audioFileInput.value = '';
+        if (coverFileInput) coverFileInput.value = '';
         songFormCard.style.display = 'none';
         await fetchSongs();
     } catch (err) {
         showAdminToast('Failed to save song: ' + err.message, true);
+        if (progressEl) { progressEl.style.display = 'none'; }
+    } finally {
+        if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-floppy-disk"></i> Save Song'; }
     }
 });
 
@@ -1149,7 +1302,25 @@ window.editSong = function(id) {
 window.deleteSong = async function(id) {
     if (!confirm('Are you sure you want to delete this song from catalog?')) return;
     try {
+        // Find song data before deleting (to clean up storage)
+        const songObj = songsData.find(s => s.id === id);
+
         await adminFetch('/api/admin/songs', 'DELETE', { id });
+
+        // Clean up Supabase Storage and DB
+        if (window.DK_CloudStorage && songObj) {
+            // Delete audio from storage if it's a cloud-stored file
+            if (songObj.file_url && songObj.file_url.includes('supabase.co/storage')) {
+                await window.DK_CloudStorage.deleteFromStorage(songObj.file_url, window.DK_CloudStorage.AUDIO_BUCKET).catch(console.warn);
+            }
+            // Delete cover from storage if it's a cloud-stored file
+            if (songObj.cover_url && songObj.cover_url.includes('supabase.co/storage')) {
+                await window.DK_CloudStorage.deleteFromStorage(songObj.cover_url, window.DK_CloudStorage.COVERS_BUCKET).catch(console.warn);
+            }
+            // Delete DB record
+            await window.DK_CloudStorage.deleteSongFromDB(id).catch(console.warn);
+        }
+
         showAdminToast('Song deleted from catalog.');
         await fetchSongs();
     } catch (err) {

@@ -216,6 +216,15 @@ function savePlaylists() {
   localStorage.setItem('dk_playlists', JSON.stringify(serialised));
   renderSidebarPlaylists();
   renderHomePlaylists();
+
+  // Sync to Supabase cloud (non-blocking)
+  if (window.DK_CloudStorage && navigator.onLine) {
+    serialised.forEach(pl => {
+      window.DK_CloudStorage.upsertPlaylistToDB(pl).catch(e => {
+        console.warn('[Playlists] Cloud sync failed for', pl.name, e);
+      });
+    });
+  }
 }
 
 function addToRecent(id) {
@@ -375,10 +384,10 @@ document.getElementById('btnForward')?.addEventListener('click', () => {
 });
 
 // ── Data Ingestion (100% Royalty Free Catalog + Local + Supabase) ─
-async function fetchSongs() {
+ async function fetchSongs() {
   let fetched = [];
 
-  // 1. Try Supabase if available
+  // 1. Try Supabase DB for cloud songs
   try {
     if (typeof supabaseClient !== 'undefined' && supabaseClient) {
       const { data, error } = await supabaseClient
@@ -445,20 +454,67 @@ async function fetchSongs() {
   songs = fetched;
   window.songs = songs;
 
-  // 4. Initialize Pre-made Curated Playlists if user has none
-  if (!playlists.length && window.DK_MusicData?.premadePlaylists) {
-    playlists = [...window.DK_MusicData.premadePlaylists];
-    playlistSongMap = {};
-    playlists.forEach(pl => {
-      playlistSongMap[pl.id] = new Set(pl.songs || []);
-    });
-    savePlaylists();
-  }
+  // 4. Load playlists: merge Supabase cloud playlists with local
+  await fetchAndMergePlaylists();
 
   currentQueue = [...songs];
   window.currentQueue = currentQueue;
   renderAll();
   updateOfflineCounts();
+}
+
+/** Fetch playlists from Supabase and merge with localStorage playlists */
+async function fetchAndMergePlaylists() {
+  let cloudPlaylists = [];
+
+  // Try Supabase cloud playlists first
+  try {
+    if (window.DK_CloudStorage) {
+      cloudPlaylists = await window.DK_CloudStorage.fetchCloudPlaylists();
+    } else if (typeof supabaseClient !== 'undefined' && supabaseClient) {
+      const { data, error } = await supabaseClient.from('playlists').select('*').order('created_at', { ascending: false });
+      if (!error && data) cloudPlaylists = data;
+    }
+  } catch (e) {
+    console.warn('[Playlists] Cloud fetch failed, using local only:', e);
+  }
+
+  // Get local playlists from localStorage
+  let localPlaylists = [];
+  try {
+    localPlaylists = JSON.parse(localStorage.getItem('dk_playlists') || '[]');
+  } catch (e) { localPlaylists = []; }
+
+  // Merge: cloud playlists take precedence, then local-only ones
+  const merged = [...cloudPlaylists];
+  const cloudIds = new Set(cloudPlaylists.map(p => p.id));
+  localPlaylists.forEach(p => {
+    if (!cloudIds.has(p.id)) merged.push(p);
+  });
+
+  // If no playlists at all, load premade defaults
+  if (!merged.length && window.DK_MusicData && window.DK_MusicData.premadePlaylists) {
+    merged.push(...window.DK_MusicData.premadePlaylists);
+  }
+
+  playlists = merged;
+  playlistSongMap = {};
+  playlists.forEach(pl => {
+    playlistSongMap[pl.id] = new Set(pl.songs || []);
+  });
+
+  // Persist merged list to localStorage as cache
+  try {
+    const serialised = playlists.map(pl => ({
+      id: pl.id,
+      name: pl.name,
+      description: pl.description || '',
+      cover: pl.cover || null,
+      created: pl.created || pl.created_at || Date.now(),
+      songs: [...(playlistSongMap[pl.id] || [])]
+    }));
+    localStorage.setItem('dk_playlists', JSON.stringify(serialised));
+  } catch (e) { }
 }
 
   // ── Admin Home Sections & Settings Engine ───────────────────

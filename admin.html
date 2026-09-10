@@ -460,27 +460,40 @@
                 <!-- System Status Card -->
                 <div class="admin-card" style="margin-bottom:0;">
                     <h3 style="margin:0 0 16px 0; color:#fff; display:flex; align-items:center; gap:8px;">
-                        <i class="fas fa-server" style="color:#22c55e;"></i> System & Storage Status
+                        <i class="fas fa-server" style="color:#22c55e;"></i> System &amp; Storage Status
                     </h3>
-                    <div style="display:flex; flex-direction:column; gap:12px;">
-                        <div style="display:flex; justify-content:space-between; padding:10px 14px; background:#181b26; border-radius:8px;">
-                            <span style="color:#8e95a5;">Engine Mode</span>
-                            <span id="dashEngineStatus" style="color:#45f3ff; font-weight:700;">LocalStorage / Local Hybrid</span>
+                    <div style="display:flex; flex-direction:column; gap:10px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#181b26; border-radius:8px;">
+                            <span style="color:#8e95a5;"><i class="fas fa-cloud" style="margin-right:6px;"></i>Storage</span>
+                            <span id="dashStorageStatus" style="color:#45f3ff; font-weight:700;"><i class="fas fa-spinner fa-spin"></i> Checking...</span>
                         </div>
-                        <div style="display:flex; justify-content:space-between; padding:10px 14px; background:#181b26; border-radius:8px;">
-                            <span style="color:#8e95a5;">Server API (REST)</span>
-                            <span id="dashServerApiStatus" class="badge-status badge-disabled">Offline / Fallback</span>
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#181b26; border-radius:8px;">
+                            <span style="color:#8e95a5;"><i class="fas fa-database" style="margin-right:6px;"></i>Database</span>
+                            <span id="dashDBStatus" style="color:#45f3ff; font-weight:700;"><i class="fas fa-spinner fa-spin"></i> Checking...</span>
                         </div>
-                        <div style="display:flex; justify-content:space-between; padding:10px 14px; background:#181b26; border-radius:8px;">
-                            <span style="color:#8e95a5;">Security Status</span>
-                            <span class="badge-status badge-active">Admin Authorized</span>
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#181b26; border-radius:8px;">
+                            <span style="color:#8e95a5;"><i class="fas fa-bolt" style="margin-right:6px;"></i>Realtime</span>
+                            <span id="dashRealtimeStatus" style="color:#22c55e; font-weight:600;"><i class="fas fa-circle-check"></i> Supabase Realtime</span>
                         </div>
-                        <div style="display:flex; justify-content:space-between; padding:10px 14px; background:#181b26; border-radius:8px;">
-                            <span style="color:#8e95a5;">Client Sync (PWA)</span>
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#181b26; border-radius:8px;">
+                            <span style="color:#8e95a5;"><i class="fas fa-user-shield" style="margin-right:6px;"></i>Auth</span>
+                            <span style="color:#22c55e; font-weight:600;"><i class="fas fa-circle-check"></i> Supabase Auth</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#181b26; border-radius:8px;">
+                            <span style="color:#8e95a5;"><i class="fas fa-wifi" style="margin-right:6px;"></i>Offline Cache</span>
+                            <span style="color:#22c55e; font-weight:600;"><i class="fas fa-circle-check"></i> IndexedDB Enabled</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#181b26; border-radius:8px;">
+                            <span style="color:#8e95a5;"><i class="fas fa-mobile-screen" style="margin-right:6px;"></i>PWA</span>
                             <span style="color:#22c55e; font-weight:600;"><i class="fas fa-circle-check"></i> Enabled</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding:10px 14px; background:#181b26; border-radius:8px;">
+                            <span style="color:#8e95a5;"><i class="fas fa-shield-halved" style="margin-right:6px;"></i>Security</span>
+                            <span class="badge-status badge-active">Admin Authorized</span>
                         </div>
                     </div>
                 </div>
+            </div>
 
                 <!-- Recent Tracks Preview -->
                 <div class="admin-card" style="margin-bottom:0;">
@@ -799,12 +812,17 @@
                                 <input type="text" id="songFormAlbum" class="search-admin-input" style="max-width:100%;">
                             </div>
                             <div>
-                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Cover URL</label>
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Cover Art URL</label>
                                 <input type="url" id="songFormCover" class="search-admin-input" style="max-width:100%;" placeholder="https://...">
+                                <label style="font-size:0.75rem; display:block; margin-top:6px; margin-bottom:4px; color:#8e95a5;">or Upload Cover Image</label>
+                                <input type="file" id="songFormCoverFile" accept="image/*" style="font-size:0.8rem; color:#c5c6c7; background:#1a1d28; border:1px solid #2d3345; border-radius:6px; padding:6px; width:100%; cursor:pointer;">
                             </div>
                             <div>
-                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Audio Stream/File URL *</label>
-                                <input type="url" id="songFormAudio" class="search-admin-input" style="max-width:100%;" required placeholder="https://...">
+                                <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Audio Stream/File URL</label>
+                                <input type="url" id="songFormAudio" class="search-admin-input" style="max-width:100%;" placeholder="https://... (leave blank to upload file)">
+                                <label style="font-size:0.75rem; display:block; margin-top:6px; margin-bottom:4px; color:#8e95a5;">or Upload Audio File (MP3/WAV/FLAC)</label>
+                                <input type="file" id="songFormAudioFile" accept="audio/*,.mp3,.wav,.flac,.aac,.ogg" style="font-size:0.8rem; color:#c5c6c7; background:#1a1d28; border:1px solid #2d3345; border-radius:6px; padding:6px; width:100%; cursor:pointer;">
+                                <div id="songUploadProgress" style="display:none; margin-top:8px; font-size:0.8rem; color:#45f3ff; background:rgba(69,243,255,0.08); padding:8px 10px; border-radius:6px;"></div>
                             </div>
                             <div>
                                 <label style="font-size:0.8rem; display:block; margin-bottom:4px;">Offline Downloadable</label>
@@ -812,10 +830,11 @@
                                     <option value="true">Allowed</option>
                                     <option value="false">Restricted</option>
                                 </select>
+                                <p style="font-size:0.75rem; color:#8e95a5; margin:8px 0 0 0;"><i class="fas fa-cloud-arrow-up" style="color:#45f3ff;"></i> Files are stored securely in Supabase Cloud Storage.</p>
                             </div>
                         </div>
-                        <div style="display:flex; gap:10px;">
-                            <button type="submit" class="btn-primary">Save Song</button>
+                        <div style="display:flex; gap:10px; flex-wrap:wrap;">
+                            <button type="submit" class="btn-primary" id="btnSaveSong"><i class="fas fa-floppy-disk"></i> Save Song</button>
                             <button type="button" id="btnCancelSong" class="btn-outline">Cancel</button>
                         </div>
                     </form>
@@ -938,6 +957,7 @@
     </script>
     <script src="supabase-client.js"></script>
     <script src="music-data.js"></script>
+    <script src="cloud-storage.js"></script>
     <script src="admin.js"></script>
 </body>
 
