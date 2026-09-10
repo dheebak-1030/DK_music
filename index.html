@@ -298,6 +298,15 @@
                     <div class="scroll-row" id="albumsRow"></div>
                 </div>
 
+                <!-- Local Songs (Imported Audio) -->
+                <div class="home-section-block" id="homeSectionLocal" style="display:none;">
+                    <div class="section-header">
+                        <h2 class="section-title"><i class="fas fa-file-audio header-icon" style="color:var(--accent);"></i> Local Songs (Imported MP3s)</h2>
+                        <span class="badge-mini" id="homeLocalCountBadge" style="background:rgba(69,243,255,0.15); color:#45f3ff; border:1px solid rgba(69,243,255,0.3); padding:4px 8px; border-radius:6px; font-size:0.75rem;">0 tracks</span>
+                    </div>
+                    <div class="song-grid" id="localSongGrid"></div>
+                </div>
+
                 <!-- All Copyright-Free Tracks -->
                 <div class="home-section-block" id="homeSectionAllTracks">
                     <div class="section-header">
@@ -851,9 +860,11 @@
             <!-- Mobile Controls -->
             <div class="mps-controls-row">
                 <button class="btn-icon ctrl-btn" id="btnMpsShuffle"><i class="fas fa-shuffle"></i></button>
+                <button class="btn-icon ctrl-btn-big" id="btnMpsSkipBack10" title="Rewind 10s"><i class="fas fa-rotate-left"></i><span style="font-size:0.55rem;position:absolute;bottom:2px;right:4px;font-weight:700;">10</span></button>
                 <button class="btn-icon ctrl-btn-big" id="btnMpsPrev"><i class="fas fa-backward-step"></i></button>
                 <button class="btn-play-pause-huge" id="btnMpsPlayPause"><i class="fas fa-play" id="mpsPlayIcon"></i></button>
                 <button class="btn-icon ctrl-btn-big" id="btnMpsNext"><i class="fas fa-forward-step"></i></button>
+                <button class="btn-icon ctrl-btn-big" id="btnMpsSkipForward10" title="Forward 10s"><i class="fas fa-rotate-right"></i><span style="font-size:0.55rem;position:absolute;bottom:2px;right:4px;font-weight:700;">10</span></button>
                 <button class="btn-icon ctrl-btn" id="btnMpsRepeat"><i class="fas fa-repeat"></i></button>
             </div>
 
@@ -944,9 +955,11 @@
         <div class="player-controls">
             <div class="control-buttons">
                 <button class="btn-icon ctrl-btn" id="btnShuffle" title="Shuffle"><i class="fas fa-shuffle"></i></button>
+                <button class="btn-icon ctrl-btn" id="btnSkipBack10" title="Rewind 10 seconds" style="position:relative;"><i class="fas fa-rotate-left"></i><span style="font-size:0.5rem;position:absolute;bottom:1px;right:3px;font-weight:800;line-height:1;">10</span></button>
                 <button class="btn-icon ctrl-btn" id="btnPrev" title="Previous"><i class="fas fa-backward-step"></i></button>
                 <button class="btn-play-pause" id="btnPlayPause" title="Play/Pause"><i class="fas fa-play" id="playIcon"></i></button>
                 <button class="btn-icon ctrl-btn" id="btnNext" title="Next"><i class="fas fa-forward-step"></i></button>
+                <button class="btn-icon ctrl-btn" id="btnSkipForward10" title="Forward 10 seconds" style="position:relative;"><i class="fas fa-rotate-right"></i><span style="font-size:0.5rem;position:absolute;bottom:1px;right:3px;font-weight:800;line-height:1;">10</span></button>
                 <button class="btn-icon ctrl-btn" id="btnRepeat" title="Repeat"><i class="fas fa-repeat"></i></button>
             </div>
             <div class="playback-bar">
@@ -976,40 +989,139 @@
     <input type="file" id="localAudioFileInput" accept="audio/*,.mp3,.wav,.ogg,.m4a,.flac" multiple style="display:none">
     <div class="toast" id="toast"></div>
 
-    <!-- USER AUTH MODAL -->
+    <!-- USER AUTH MODAL (Multi-Step: Login | Signup via OTP | Forgot Password) -->
     <div class="modal-backdrop hidden" id="authModal">
-        <div class="modal-card auth-modal-card" style="max-width:400px; padding:0; overflow:hidden; border-radius:16px; background:#12141d; border:1px solid #1f2833;">
+        <div class="modal-card auth-modal-card" style="max-width:420px; padding:0; overflow:hidden; border-radius:16px; background:#12141d; border:1px solid #1f2833;">
+            <!-- Header -->
             <div class="modal-header" style="padding:16px 20px; border-bottom:1px solid #1f2833; display:flex; justify-content:space-between; align-items:center;">
                 <h3 id="authModalTitle" style="margin:0; font-size:1.1rem; color:#fff; display:flex; align-items:center; gap:8px;">
                     <i class="fas fa-user-lock" style="color:#45f3ff;"></i> User Login
                 </h3>
                 <button class="btn-icon-sm" id="btnCloseAuthModal" style="background:transparent; border:none; color:#8e95a5; cursor:pointer;"><i class="fas fa-xmark"></i></button>
             </div>
+            <!-- Tabs -->
             <div class="auth-tabs" style="display:flex; border-bottom:1px solid #1f2833; background:#0b0c10;">
-                <button class="auth-tab-btn active" id="tabAuthLogin" style="flex:1; padding:12px; background:transparent; border:none; color:#45f3ff; font-weight:700; cursor:pointer; border-bottom:2px solid #45f3ff;">Log In</button>
-                <button class="auth-tab-btn" id="tabAuthRegister" style="flex:1; padding:12px; background:transparent; border:none; color:#8e95a5; font-weight:600; cursor:pointer;">Register New User</button>
+                <button class="auth-tab-btn active" id="tabAuthLogin" style="flex:1; padding:12px; background:transparent; border:none; color:#45f3ff; font-weight:700; cursor:pointer; border-bottom:2px solid #45f3ff; font-size:0.85rem;">Log In</button>
+                <button class="auth-tab-btn" id="tabAuthRegister" style="flex:1; padding:12px; background:transparent; border:none; color:#8e95a5; font-weight:600; cursor:pointer; font-size:0.85rem;">New User</button>
+                <button class="auth-tab-btn" id="tabAuthForgot" style="flex:1; padding:12px; background:transparent; border:none; color:#8e95a5; font-weight:600; cursor:pointer; font-size:0.85rem;">Forgot PW</button>
             </div>
-            <form id="userAuthForm" style="padding: 24px;">
-                <div id="authNameGroup" class="form-group hidden" style="margin-bottom:14px;">
-                    <label for="authNameInput" style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">Display Name</label>
-                    <input type="text" id="authNameInput" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 14px;" placeholder="Your Name">
+
+            <!-- ======= LOGIN VIEW ======= -->
+            <div id="authViewLogin" style="padding:24px;">
+                <div style="margin-bottom:14px;">
+                    <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">User ID *</label>
+                    <input type="text" id="loginUserId" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 14px; box-sizing:border-box;" placeholder="Your User ID" autocomplete="username">
                 </div>
-                <div class="form-group" style="margin-bottom:14px;">
-                    <label for="authUserIdInput" style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">User ID *</label>
-                    <input type="text" id="authUserIdInput" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 14px;" placeholder="e.g. user1 or admin" required>
+                <div style="margin-bottom:18px; position:relative;">
+                    <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">Password *</label>
+                    <input type="password" id="loginPassword" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 40px 10px 14px; box-sizing:border-box;" placeholder="Your password" autocomplete="current-password">
+                    <button type="button" class="dk-pw-toggle" data-target="loginPassword" title="Show/Hide password"><i class="fas fa-eye"></i></button>
                 </div>
-                <div class="form-group" style="margin-bottom:18px;">
-                    <label for="authPasswordInput" style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">Password *</label>
-                    <input type="password" id="authPasswordInput" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 14px;" placeholder="Enter password" required>
-                </div>
-                <div id="authErrorAlert" class="auth-error-alert hidden" style="color:#ff4d4d; font-size:13px; margin-bottom:14px; text-align:center; font-weight:600;"></div>
-                <button type="submit" class="btn-primary" id="btnAuthSubmit" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">Log In</button>
-                <div style="margin-top:16px; border-top:1px solid #1f2833; padding-top:14px; text-align:center;">
-                    <a href="admin.html" style="color:#45f3ff; text-decoration:none; font-size:13px; font-weight:700; display:inline-flex; align-items:center; gap:6px;">
+                <div id="loginError" style="color:#ff4d4d; font-size:13px; margin-bottom:12px; text-align:center; font-weight:600; display:none;"></div>
+                <button class="btn-primary" id="btnLoginSubmit" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">Log In</button>
+                <div style="margin-top:14px; border-top:1px solid #1f2833; padding-top:14px; text-align:center;">
+                    <a href="admin.html" style="color:#45f3ff; text-decoration:none; font-size:12px; font-weight:700; display:inline-flex; align-items:center; gap:6px;">
                         <i class="fas fa-sliders"></i> Open Admin Control Panel &rarr;
                     </a>
                 </div>
-            </form>
+            </div>
+
+            <!-- ======= SIGNUP VIEW — Step 1: Mobile ======= -->
+            <div id="authViewSignup1" style="padding:24px; display:none;">
+                <p style="color:#8e95a5; font-size:0.85rem; margin:0 0 16px 0;">Enter your mobile number. We'll send a verification code.</p>
+                <div style="margin-bottom:14px;">
+                    <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">Mobile Number *</label>
+                    <input type="tel" id="signupMobile" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 14px; box-sizing:border-box;" placeholder="+91 9876543210" maxlength="15">
+                </div>
+                <div id="signup1Error" style="color:#ff4d4d; font-size:13px; margin-bottom:12px; text-align:center; font-weight:600; display:none;"></div>
+                <button class="btn-primary" id="btnSignupSendOtp" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">Send OTP Code</button>
+            </div>
+
+            <!-- ======= SIGNUP VIEW — Step 2: OTP ======= -->
+            <div id="authViewSignup2" style="padding:24px; display:none;">
+                <p style="color:#8e95a5; font-size:0.85rem; margin:0 0 6px 0;">Enter the 6-digit code sent to <strong id="signupMobileDisplay" style="color:#45f3ff;"></strong>.</p>
+                <p id="signupOtpTimer" style="color:#f59e0b; font-size:0.8rem; margin:0 0 16px 0; font-weight:600;"></p>
+                <div style="display:flex; gap:8px; justify-content:center; margin-bottom:18px;" id="otpInputs">
+                    <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+                    <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+                    <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+                    <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+                    <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+                    <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+                </div>
+                <div id="signup2Error" style="color:#ff4d4d; font-size:13px; margin-bottom:12px; text-align:center; font-weight:600; display:none;"></div>
+                <button class="btn-primary" id="btnSignupVerifyOtp" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">Verify Code</button>
+                <button class="btn-outline" id="btnSignupResendOtp" style="width:100%; padding:10px; border-radius:8px; font-weight:600; margin-top:8px; font-size:0.85rem;" disabled>Resend Code</button>
+            </div>
+
+            <!-- ======= SIGNUP VIEW — Step 3: Create Account ======= -->
+            <div id="authViewSignup3" style="padding:24px; display:none;">
+                <p style="color:#8e95a5; font-size:0.85rem; margin:0 0 16px 0;">Mobile verified! Now set your User ID and Password.</p>
+                <div style="margin-bottom:14px;">
+                    <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">Display Name</label>
+                    <input type="text" id="signupName" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 14px; box-sizing:border-box;" placeholder="Your Name">
+                </div>
+                <div style="margin-bottom:14px;">
+                    <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">User ID * <span style="font-size:11px; color:#64748b;">(unique, no spaces)</span></label>
+                    <input type="text" id="signupUserId" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 14px; box-sizing:border-box;" placeholder="e.g. musicfan2024" autocomplete="username">
+                </div>
+                <div style="margin-bottom:14px; position:relative;">
+                    <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">Password * <span style="font-size:11px; color:#64748b;">(min 6 characters)</span></label>
+                    <input type="password" id="signupPassword" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 40px 10px 14px; box-sizing:border-box;" placeholder="Create a strong password" autocomplete="new-password">
+                    <button type="button" class="dk-pw-toggle" data-target="signupPassword" title="Show/Hide password"><i class="fas fa-eye"></i></button>
+                </div>
+                <div style="margin-bottom:18px; position:relative;">
+                    <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">Confirm Password *</label>
+                    <input type="password" id="signupConfirmPassword" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 40px 10px 14px; box-sizing:border-box;" placeholder="Repeat your password" autocomplete="new-password">
+                    <button type="button" class="dk-pw-toggle" data-target="signupConfirmPassword" title="Show/Hide password"><i class="fas fa-eye"></i></button>
+                </div>
+                <div id="signup3Error" style="color:#ff4d4d; font-size:13px; margin-bottom:12px; text-align:center; font-weight:600; display:none;"></div>
+                <button class="btn-primary" id="btnSignupCreate" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">Create Account</button>
+            </div>
+
+            <!-- ======= FORGOT PASSWORD — Step 1: Identify ======= -->
+            <div id="authViewForgot1" style="padding:24px; display:none;">
+                <p style="color:#8e95a5; font-size:0.85rem; margin:0 0 16px 0;">Enter your User ID or registered mobile number to reset your password.</p>
+                <div style="margin-bottom:14px;">
+                    <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">User ID or Mobile Number *</label>
+                    <input type="text" id="forgotIdentifier" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 14px; box-sizing:border-box;" placeholder="Your User ID or mobile">
+                </div>
+                <div id="forgot1Error" style="color:#ff4d4d; font-size:13px; margin-bottom:12px; text-align:center; font-weight:600; display:none;"></div>
+                <button class="btn-primary" id="btnForgotSendOtp" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">Send OTP Code</button>
+            </div>
+
+            <!-- ======= FORGOT PASSWORD — Step 2: OTP ======= -->
+            <div id="authViewForgot2" style="padding:24px; display:none;">
+                <p style="color:#8e95a5; font-size:0.85rem; margin:0 0 6px 0;">Enter the 6-digit verification code.</p>
+                <p id="forgotOtpTimer" style="color:#f59e0b; font-size:0.8rem; margin:0 0 16px 0; font-weight:600;"></p>
+                <div style="display:flex; gap:8px; justify-content:center; margin-bottom:18px;" id="forgotOtpInputs">
+                    <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+                    <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+                    <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+                    <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+                    <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+                    <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
+                </div>
+                <div id="forgot2Error" style="color:#ff4d4d; font-size:13px; margin-bottom:12px; text-align:center; font-weight:600; display:none;"></div>
+                <button class="btn-primary" id="btnForgotVerifyOtp" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">Verify Code</button>
+            </div>
+
+            <!-- ======= FORGOT PASSWORD — Step 3: New Password ======= -->
+            <div id="authViewForgot3" style="padding:24px; display:none;">
+                <p style="color:#8e95a5; font-size:0.85rem; margin:0 0 16px 0;">Set your new password.</p>
+                <div style="margin-bottom:14px; position:relative;">
+                    <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">New Password * <span style="font-size:11px; color:#64748b;">(min 6 characters)</span></label>
+                    <input type="password" id="forgotNewPassword" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 40px 10px 14px; box-sizing:border-box;" placeholder="New strong password" autocomplete="new-password">
+                    <button type="button" class="dk-pw-toggle" data-target="forgotNewPassword" title="Show/Hide password"><i class="fas fa-eye"></i></button>
+                </div>
+                <div style="margin-bottom:18px; position:relative;">
+                    <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">Confirm New Password *</label>
+                    <input type="password" id="forgotConfirmPassword" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 40px 10px 14px; box-sizing:border-box;" placeholder="Repeat new password" autocomplete="new-password">
+                    <button type="button" class="dk-pw-toggle" data-target="forgotConfirmPassword" title="Show/Hide password"><i class="fas fa-eye"></i></button>
+                </div>
+                <div id="forgot3Error" style="color:#ff4d4d; font-size:13px; margin-bottom:12px; text-align:center; font-weight:600; display:none;"></div>
+                <button class="btn-primary" id="btnForgotResetPassword" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">Reset Password</button>
+            </div>
         </div>
     </div>
 

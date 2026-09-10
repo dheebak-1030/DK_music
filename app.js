@@ -393,6 +393,22 @@ async function fetchSongs() {
     console.warn('[Data] Supabase not connected, using built-in catalog:', err);
   }
 
+  // 1b. Add Admin Local Storage Songs (Direct sync with admin catalog)
+  try {
+    const adminLocalSongs = JSON.parse(localStorage.getItem('dk_admin_songs_db') || '[]');
+    if (Array.isArray(adminLocalSongs)) {
+      const existingIds = new Set(fetched.map(s => s.id));
+      adminLocalSongs.forEach(s => {
+        if (!existingIds.has(s.id)) {
+          fetched.push(s);
+          existingIds.add(s.id);
+        }
+      });
+    }
+  } catch (err) {
+    console.warn('[Data] Error loading admin catalog songs:', err);
+  }
+
   // 2. Add Built-in 100% Royalty-Free Catalog
   const builtIn = (window.DK_MusicData && window.DK_MusicData.catalog) ? window.DK_MusicData.catalog : [];
 
@@ -523,6 +539,23 @@ async function fetchSongs() {
     }
   });
 
+  // ── Home View Local Songs Shelf ────────────────────────────
+  function renderHomeLocalSection() {
+    const section = document.getElementById('homeSectionLocal');
+    const badge = document.getElementById('homeLocalCountBadge');
+    if (!section) return;
+
+    const localTracks = songs.filter(s => s.isLocal);
+    if (!localTracks.length) {
+      section.style.display = 'none';
+      return;
+    }
+
+    section.style.display = 'block';
+    if (badge) badge.textContent = `${localTracks.length} track${localTracks.length === 1 ? '' : 's'}`;
+    renderSongGrid(localTracks, 'localSongGrid');
+  }
+
   function renderAll() {
     applyAdminHomeSectionsConfig();
     applyAdminAppSettings();
@@ -531,6 +564,7 @@ async function fetchSongs() {
     renderHomePlaylists();
     renderRecentRow();
     renderAlbumsRow();
+    renderHomeLocalSection();
     renderSongGrid(songs, 'songGrid');
     renderSidebarPlaylists();
     updateLikedCount();
@@ -1133,6 +1167,14 @@ async function fetchSongs() {
   btnPrev?.addEventListener('click', prevSong);
   audioEl.addEventListener('ended', nextSong);
 
+  // 10-Second Skip Buttons (Desktop)
+  document.getElementById('btnSkipBack10')?.addEventListener('click', () => {
+    if (audioEl) audioEl.currentTime = Math.max(0, audioEl.currentTime - 10);
+  });
+  document.getElementById('btnSkipForward10')?.addEventListener('click', () => {
+    if (audioEl) audioEl.currentTime = Math.min(audioEl.duration || 0, audioEl.currentTime + 10);
+  });
+
   // Shuffle & Repeat
   btnShuffle?.addEventListener('click', () => {
     isShuffled = !isShuffled;
@@ -1160,16 +1202,35 @@ async function fetchSongs() {
     showToast(['Repeat Off', '🔁 Repeat All', '🔂 Repeat One'][repeatMode]);
   });
 
+  // Drag-to-Seek Engine
+  let isDraggingProgress = false;
+
+  function updateProgressFromEvent(e) {
+    if (!progressCont || !audioEl.duration) return 0;
+    const rect = progressCont.getBoundingClientRect();
+    const clientX = (e.touches && e.touches[0])
+      ? e.touches[0].clientX
+      : ((e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0].clientX : e.clientX);
+    const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    if (progressFill) progressFill.style.width = `${pct * 100}%`;
+    if (progressThumb) progressThumb.style.left = `${pct * 100}%`;
+    const targetTime = pct * audioEl.duration;
+    if (currentTimeEl) currentTimeEl.textContent = fmt(targetTime);
+    return targetTime;
+  }
+
   // Progress Bar & Time
   audioEl.addEventListener('timeupdate', () => {
     const { currentTime, duration } = audioEl;
     if (duration && !isNaN(duration)) {
       const pct = (currentTime / duration) * 100;
 
-      // Desktop bar
-      if (progressFill) progressFill.style.width = `${pct}%`;
-      if (progressThumb) progressThumb.style.left = `${pct}%`;
-      if (currentTimeEl) currentTimeEl.textContent = fmt(currentTime);
+      // Desktop bar (respect active drag state)
+      if (!isDraggingProgress) {
+        if (progressFill) progressFill.style.width = `${pct}%`;
+        if (progressThumb) progressThumb.style.left = `${pct}%`;
+        if (currentTimeEl) currentTimeEl.textContent = fmt(currentTime);
+      }
       if (totalTimeEl) totalTimeEl.textContent = fmt(duration);
 
       // Mobile mini player & sheet bars (respect active scrub state)
@@ -1191,14 +1252,56 @@ async function fetchSongs() {
     if (mpsTotalTime) mpsTotalTime.textContent = fmt(audioEl.duration);
   });
 
-  // Desktop Seek
+  // Desktop Drag & Click Seek Handlers
   function seek(e) {
     if (!progressCont || !audioEl.duration) return;
-    const rect = progressCont.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    audioEl.currentTime = pct * audioEl.duration;
+    const targetTime = updateProgressFromEvent(e);
+    if (typeof targetTime === 'number' && !isNaN(targetTime)) {
+      audioEl.currentTime = targetTime;
+    }
   }
+
+  progressCont?.addEventListener('mousedown', e => {
+    if (!audioEl.duration) return;
+    isDraggingProgress = true;
+    updateProgressFromEvent(e);
+  });
+
+  window.addEventListener('mousemove', e => {
+    if (!isDraggingProgress) return;
+    updateProgressFromEvent(e);
+  });
+
+  window.addEventListener('mouseup', e => {
+    if (!isDraggingProgress) return;
+    isDraggingProgress = false;
+    const targetTime = updateProgressFromEvent(e);
+    if (typeof targetTime === 'number' && !isNaN(targetTime)) {
+      audioEl.currentTime = targetTime;
+    }
+  });
+
   progressCont?.addEventListener('click', seek);
+
+  progressCont?.addEventListener('touchstart', e => {
+    if (!audioEl.duration) return;
+    isDraggingProgress = true;
+    updateProgressFromEvent(e);
+  }, { passive: true });
+
+  window.addEventListener('touchmove', e => {
+    if (!isDraggingProgress) return;
+    updateProgressFromEvent(e);
+  }, { passive: true });
+
+  window.addEventListener('touchend', e => {
+    if (!isDraggingProgress) return;
+    isDraggingProgress = false;
+    const targetTime = updateProgressFromEvent(e);
+    if (typeof targetTime === 'number' && !isNaN(targetTime)) {
+      audioEl.currentTime = targetTime;
+    }
+  });
 
   // Volume Controls
   function setVolume(vol) {
@@ -1591,6 +1694,15 @@ async function fetchSongs() {
   btnMpsPrev?.addEventListener('click', () => {
     triggerHaptic('light');
     prevSong();
+  });
+  // 10-Second Skip Buttons (Mobile Sheet)
+  document.getElementById('btnMpsSkipBack10')?.addEventListener('click', () => {
+    triggerHaptic('light');
+    if (audioEl) audioEl.currentTime = Math.max(0, audioEl.currentTime - 10);
+  });
+  document.getElementById('btnMpsSkipForward10')?.addEventListener('click', () => {
+    triggerHaptic('light');
+    if (audioEl) audioEl.currentTime = Math.min(audioEl.duration || 0, audioEl.currentTime + 10);
   });
   btnMpsShuffle?.addEventListener('click', () => {
     triggerHaptic('light');
@@ -3006,197 +3118,471 @@ async function fetchSongs() {
     }
   }
 
-  let authMode = 'login';
+
+  // ================================================================
+  // ── MULTI-STEP AUTH SYSTEM ───────────────────────────────────────
+  //   Login: User ID + Password
+  //   Signup: Mobile OTP → User ID + Password (SHA-256 hashed)
+  //   Forgot PW: User ID or Mobile OTP → new password
+  // ================================================================
+
+  // ── Helpers ──────────────────────────────────────────────────────
+  async function dk_hashPassword(plain) {
+    const enc = new TextEncoder().encode(plain);
+    const buf = await crypto.subtle.digest('SHA-256', enc);
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+  }
+
+  function dk_generateOtp() {
+    return String(Math.floor(100000 + Math.random() * 900000));
+  }
+
+  let _dkOtpStore = { code: '', mobile: '', userId: '', expiry: 0, context: '' };
+  let _dkOtpTimerInterval = null;
+
+  function dk_startOtpTimer(timerElId, resendBtnId, seconds = 120) {
+    clearInterval(_dkOtpTimerInterval);
+    const timerEl = document.getElementById(timerElId);
+    const resendBtn = document.getElementById(resendBtnId);
+    if (resendBtn) resendBtn.disabled = true;
+    let remaining = seconds;
+    const tick = () => {
+      if (!timerEl) return;
+      const m = Math.floor(remaining / 60), s = remaining % 60;
+      timerEl.textContent = `Code expires in ${m}:${String(s).padStart(2,'0')}`;
+      if (remaining <= 0) {
+        clearInterval(_dkOtpTimerInterval);
+        timerEl.textContent = 'Code expired. Please resend.';
+        timerEl.style.color = '#ff4d4d';
+        if (resendBtn) resendBtn.disabled = false;
+        return;
+      }
+      remaining--;
+    };
+    tick();
+    _dkOtpTimerInterval = setInterval(tick, 1000);
+  }
+
+  function dk_getOtpValue(containerId) {
+    const boxes = document.querySelectorAll(`#${containerId} .dk-otp-box`);
+    return Array.from(boxes).map(b => b.value).join('');
+  }
+
+  function dk_clearOtpBoxes(containerId) {
+    document.querySelectorAll(`#${containerId} .dk-otp-box`).forEach(b => { b.value = ''; b.classList.remove('otp-filled'); });
+  }
+
+  function dk_setAuthError(elId, msg) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    el.textContent = msg;
+    el.style.display = msg ? 'block' : 'none';
+  }
+
+  function dk_setAllAuthViews(showId) {
+    ['authViewLogin','authViewSignup1','authViewSignup2','authViewSignup3',
+     'authViewForgot1','authViewForgot2','authViewForgot3'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = (id === showId) ? '' : 'none';
+    });
+  }
+
+  // ── Tab switching ─────────────────────────────────────────────────
+  function dk_switchAuthTab(tab) {
+    ['tabAuthLogin','tabAuthRegister','tabAuthForgot'].forEach(id => {
+      const btn = document.getElementById(id);
+      if (!btn) return;
+      const active = (id === tab);
+      btn.style.color = active ? '#45f3ff' : '#8e95a5';
+      btn.style.borderBottom = active ? '2px solid #45f3ff' : 'none';
+    });
+    const authModalTitle = document.getElementById('authModalTitle');
+    if (tab === 'tabAuthLogin') {
+      if (authModalTitle) authModalTitle.innerHTML = '<i class="fas fa-user-lock" style="color:#45f3ff;"></i> User Login';
+      dk_setAllAuthViews('authViewLogin');
+    } else if (tab === 'tabAuthRegister') {
+      if (authModalTitle) authModalTitle.innerHTML = '<i class="fas fa-user-plus" style="color:#45f3ff;"></i> New Account';
+      dk_setAllAuthViews('authViewSignup1');
+    } else {
+      if (authModalTitle) authModalTitle.innerHTML = '<i class="fas fa-key" style="color:#f59e0b;"></i> Forgot Password';
+      dk_setAllAuthViews('authViewForgot1');
+    }
+  }
 
   function openAuthModal(mode = 'login') {
-    authMode = mode;
     const modal = document.getElementById('authModal');
-    const title = document.getElementById('authModalTitle');
-    const tabLogin = document.getElementById('tabAuthLogin');
-    const tabRegister = document.getElementById('tabAuthRegister');
-    const nameGroup = document.getElementById('authNameGroup');
-    const btnSubmit = document.getElementById('btnAuthSubmit');
-    const errorAlert = document.getElementById('authErrorAlert');
-
     if (!modal) return;
-    if (errorAlert) errorAlert.classList.add('hidden');
-
-    if (mode === 'login') {
-      title.innerHTML = '<i class="fas fa-user-lock" style="color:var(--accent);"></i> User Login';
-      tabLogin.classList.add('active');
-      tabLogin.style.color = '#45f3ff';
-      tabLogin.style.borderBottom = '2px solid #45f3ff';
-      tabRegister.classList.remove('active');
-      tabRegister.style.color = '#8e95a5';
-      tabRegister.style.borderBottom = 'none';
-      nameGroup.classList.add('hidden');
-      btnSubmit.textContent = 'Log In';
-    } else {
-      title.innerHTML = '<i class="fas fa-user-plus" style="color:var(--accent);"></i> Register Account';
-      tabRegister.classList.add('active');
-      tabRegister.style.color = '#45f3ff';
-      tabRegister.style.borderBottom = '2px solid #45f3ff';
-      tabLogin.classList.remove('active');
-      tabLogin.style.color = '#8e95a5';
-      tabLogin.style.borderBottom = 'none';
-      nameGroup.classList.remove('hidden');
-      btnSubmit.textContent = 'Register & Log In';
-    }
-
+    clearInterval(_dkOtpTimerInterval);
+    // clear all errors
+    ['loginError','signup1Error','signup2Error','signup3Error','forgot1Error','forgot2Error','forgot3Error'].forEach(id => dk_setAuthError(id, ''));
+    if (mode === 'register') dk_switchAuthTab('tabAuthRegister');
+    else if (mode === 'forgot') dk_switchAuthTab('tabAuthForgot');
+    else dk_switchAuthTab('tabAuthLogin');
     modal.classList.remove('hidden');
   }
 
   function closeAuthModal() {
     const modal = document.getElementById('authModal');
     if (modal) modal.classList.add('hidden');
+    clearInterval(_dkOtpTimerInterval);
   }
 
-  async function handleAuthFormSubmit(e) {
-    e.preventDefault();
-    const userIdInput = document.getElementById('authUserIdInput');
-    const passwordInput = document.getElementById('authPasswordInput');
-    const nameInput = document.getElementById('authNameInput');
-    const btnSubmit = document.getElementById('btnAuthSubmit');
-    const errorAlert = document.getElementById('authErrorAlert');
+  // ── Password toggle (show/hide) ──────────────────────────────────
+  document.querySelectorAll('.dk-pw-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.dataset.target;
+      const inp = document.getElementById(targetId);
+      if (!inp) return;
+      const show = inp.type === 'password';
+      inp.type = show ? 'text' : 'password';
+      const icon = btn.querySelector('i');
+      if (icon) { icon.className = show ? 'fas fa-eye-slash' : 'fas fa-eye'; }
+    });
+  });
 
-    const userId = userIdInput.value.trim();
-    const password = passwordInput.value.trim();
-    const name = nameInput ? nameInput.value.trim() : '';
+  // ── OTP box: auto-advance and backspace ──────────────────────────
+  function dk_setupOtpBoxes(containerId) {
+    const boxes = document.querySelectorAll(`#${containerId} .dk-otp-box`);
+    boxes.forEach((box, i) => {
+      box.addEventListener('input', e => {
+        const val = box.value.replace(/\D/g, '');
+        box.value = val.slice(-1);
+        box.classList.toggle('otp-filled', !!box.value);
+        if (box.value && i < boxes.length - 1) boxes[i + 1].focus();
+      });
+      box.addEventListener('keydown', e => {
+        if (e.key === 'Backspace' && !box.value && i > 0) { boxes[i - 1].focus(); boxes[i - 1].value = ''; boxes[i-1].classList.remove('otp-filled'); }
+      });
+      box.addEventListener('paste', e => {
+        e.preventDefault();
+        const text = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g, '');
+        boxes.forEach((b, j) => { b.value = text[j] || ''; b.classList.toggle('otp-filled', !!b.value); });
+        const last = Math.min(text.length, boxes.length - 1);
+        boxes[last].focus();
+      });
+    });
+  }
+  dk_setupOtpBoxes('otpInputs');
+  dk_setupOtpBoxes('forgotOtpInputs');
 
-    if (!userId || !password) {
-      if (errorAlert) {
-        errorAlert.textContent = 'User ID and Password are required.';
-        errorAlert.classList.remove('hidden');
-      }
-      return;
-    }
+  // ── LOGIN ─────────────────────────────────────────────────────────
+  async function dk_doLogin() {
+    const userId = (document.getElementById('loginUserId')?.value || '').trim();
+    const password = (document.getElementById('loginPassword')?.value || '').trim();
+    dk_setAuthError('loginError', '');
 
-    btnSubmit.disabled = true;
-    btnSubmit.textContent = authMode === 'login' ? 'Logging in...' : 'Registering...';
-    if (errorAlert) errorAlert.classList.add('hidden');
+    if (!userId || !password) { dk_setAuthError('loginError', 'User ID and Password are required.'); return; }
+
+    const btn = document.getElementById('btnLoginSubmit');
+    if (btn) { btn.disabled = true; btn.textContent = 'Logging in…'; }
 
     try {
-      const apiBase = window.location.origin && window.location.origin !== 'null' && !window.location.origin.startsWith('file:')
-        ? window.location.origin
-        : 'http://localhost:5500';
+      // Hardcoded admin shortcut
+      if (userId === 'admin' && password === 'Qwerty@866') {
+        await dk_completeLogin({
+          id: 'admin_01', userId: 'admin', name: 'System Administrator', role: 'admin', status: 'active'
+        }, true);
+        return;
+      }
 
-      const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
-      const payload = { userId, password };
-      if (authMode === 'register') payload.name = name || userId;
-
-      let authSuccess = false;
-      let authData = null;
-
+      // Try Supabase users table first
+      let found = null;
       try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1500);
-
-        const res = await fetch(`${apiBase}${endpoint}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-
-        if (res.ok) {
-          const data = await res.json();
-          if (data && data.success) {
-            authSuccess = true;
-            authData = data;
-          }
+        const hash = await dk_hashPassword(password);
+        const { data, error } = await window._supabaseClient
+          .from('users')
+          .select('*')
+          .eq('user_id', userId)
+          .single();
+        if (!error && data) {
+          if (data.status === 'disabled') throw new Error('Account has been disabled.');
+          // Accept matching hash OR legacy plain match during migration
+          if (data.password_hash === hash || data.password_hash === password) found = data;
+          else throw new Error('Invalid User ID or Password.');
         }
-      } catch (e) {
-        // Backend offline / unreachable, use local auth fallback
+      } catch (sbErr) {
+        if (sbErr.message && (sbErr.message.includes('Invalid') || sbErr.message.includes('disabled'))) throw sbErr;
       }
 
-      if (!authSuccess) {
-        // Local Auth Fallback
-        let localUsers = [];
-        try {
-          const stored = localStorage.getItem('dk_admin_users_db');
-          if (stored) localUsers = JSON.parse(stored);
-        } catch (e) { }
-
-        if (authMode === 'login') {
-          if (userId === 'admin' && password === 'Qwerty@866') {
-            authData = {
-              token: 'dk_admin_token_sec_local_' + Date.now(),
-              isAdmin: true,
-              user: { id: 'admin_01', userId: 'admin', name: 'System Administrator', role: 'admin', status: 'active' }
-            };
-            authSuccess = true;
-          } else {
-            const matched = localUsers.find(u => u.userId.toLowerCase() === userId.toLowerCase());
-            if (matched) {
-              if (matched.status === 'disabled') {
-                throw new Error('Account has been disabled by administrator.');
-              }
-              if (matched.password && matched.password !== password && matched.passwordHash !== password) {
-                throw new Error('Invalid User ID or Password.');
-              }
-              authData = {
-                token: 'dk_user_token_local_' + matched.userId + '_' + Date.now(),
-                isAdmin: (matched.role === 'admin'),
-                user: matched
-              };
-              authSuccess = true;
-            } else {
-              throw new Error('Invalid User ID or Password. Please register or check credentials.');
-            }
-          }
-        } else {
-          // Register mode
-          if (userId.toLowerCase() === 'admin') {
-            throw new Error("Cannot register reserved User ID 'admin'.");
-          }
-          if (localUsers.some(u => u.userId.toLowerCase() === userId.toLowerCase())) {
-            throw new Error("User ID already exists. Please choose another.");
-          }
-          const newUser = {
-            id: 'usr_' + Date.now(),
-            userId: userId,
-            password: password,
-            passwordHash: password,
-            name: name || userId,
-            role: 'user',
-            status: 'active',
-            createdAt: new Date().toISOString()
-          };
-          localUsers.push(newUser);
-          localStorage.setItem('dk_admin_users_db', JSON.stringify(localUsers));
-
-          authData = {
-            token: 'dk_user_token_local_' + newUser.userId + '_' + Date.now(),
-            isAdmin: false,
-            user: newUser
-          };
-          authSuccess = true;
-        }
+      // Local fallback
+      if (!found) {
+        const localUsers = JSON.parse(localStorage.getItem('dk_admin_users_db') || '[]');
+        const localHash = await dk_hashPassword(password);
+        const lUser = localUsers.find(u => u.userId.toLowerCase() === userId.toLowerCase());
+        if (!lUser) throw new Error('Invalid User ID or Password.');
+        if (lUser.status === 'disabled') throw new Error('Account has been disabled by administrator.');
+        if (lUser.passwordHash !== localHash && lUser.password !== password) throw new Error('Invalid User ID or Password.');
+        found = { userId: lUser.userId, name: lUser.name, role: lUser.role, status: lUser.status };
       }
 
-      userAuthToken = authData.token;
-      currentUser = authData.user;
-      isUserAdmin = !!authData.isAdmin;
-
-      localStorage.setItem('dk_user_token', userAuthToken);
-      localStorage.setItem('dk_user_info', JSON.stringify(currentUser));
-
-      updateAuthHeaderUI();
-      closeAuthModal();
-      showToast(`✓ Welcome ${currentUser.name || currentUser.userId}!`);
+      await dk_completeLogin({
+        id: found.id || found.userId,
+        userId: found.user_id || found.userId,
+        name: found.name || found.user_id || found.userId,
+        role: found.role || 'user',
+        status: found.status || 'active'
+      }, (found.role === 'admin'));
 
     } catch (err) {
-      if (errorAlert) {
-        errorAlert.textContent = err.message || 'Authentication error';
-        errorAlert.classList.remove('hidden');
-      }
+      dk_setAuthError('loginError', err.message || 'Login failed.');
     } finally {
-      btnSubmit.disabled = false;
-      btnSubmit.textContent = authMode === 'login' ? 'Log In' : 'Register & Log In';
+      if (btn) { btn.disabled = false; btn.textContent = 'Log In'; }
     }
   }
 
+  async function dk_completeLogin(userObj, isAdmin) {
+    const token = 'dk_token_' + userObj.userId + '_' + Date.now();
+    userAuthToken = token;
+    currentUser = userObj;
+    isUserAdmin = !!isAdmin;
+    localStorage.setItem('dk_user_token', token);
+    localStorage.setItem('dk_user_info', JSON.stringify(userObj));
+    updateAuthHeaderUI();
+    closeAuthModal();
+    showToast(`✓ Welcome ${userObj.name || userObj.userId}!`);
+  }
+
+  // ── SIGNUP: Step 1 — Send OTP ─────────────────────────────────────
+  async function dk_signupSendOtp() {
+    const mobile = (document.getElementById('signupMobile')?.value || '').replace(/\s/g, '');
+    dk_setAuthError('signup1Error', '');
+    if (!/^\+?[\d]{10,15}$/.test(mobile)) { dk_setAuthError('signup1Error', 'Enter a valid mobile number.'); return; }
+
+    // Check not already registered
+    try {
+      const { data } = await window._supabaseClient.from('users').select('user_id').eq('mobile', mobile).maybeSingle();
+      if (data) { dk_setAuthError('signup1Error', 'This mobile is already registered. Please log in.'); return; }
+    } catch (_) {}
+
+    const btn = document.getElementById('btnSignupSendOtp');
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+
+    const otp = dk_generateOtp();
+    _dkOtpStore = { code: otp, mobile, userId: '', expiry: Date.now() + 120000, context: 'signup' };
+
+    // Attempt Supabase Edge Function / fallback: show OTP in a dev toast
+    let sent = false;
+    try {
+      const { error } = await window._supabaseClient.functions.invoke('send-otp', { body: { mobile, otp } });
+      if (!error) sent = true;
+    } catch (_) {}
+    if (!sent) {
+      // Dev/fallback: show code in toast
+      showToast(`📱 OTP: ${otp} (dev mode)`, 8000);
+    }
+
+    document.getElementById('signupMobileDisplay').textContent = mobile;
+    dk_clearOtpBoxes('otpInputs');
+    dk_setAllAuthViews('authViewSignup2');
+    dk_startOtpTimer('signupOtpTimer', 'btnSignupResendOtp');
+    if (btn) { btn.disabled = false; btn.textContent = 'Send OTP Code'; }
+    document.querySelector('#otpInputs .dk-otp-box')?.focus();
+  }
+
+  // ── SIGNUP: Step 2 — Verify OTP ───────────────────────────────────
+  function dk_signupVerifyOtp() {
+    const entered = dk_getOtpValue('otpInputs');
+    dk_setAuthError('signup2Error', '');
+    if (entered.length < 6) { dk_setAuthError('signup2Error', 'Enter the complete 6-digit code.'); return; }
+    if (Date.now() > _dkOtpStore.expiry) { dk_setAuthError('signup2Error', 'Code expired. Please resend.'); return; }
+    if (entered !== _dkOtpStore.code) { dk_setAuthError('signup2Error', 'Incorrect code. Try again.'); return; }
+    clearInterval(_dkOtpTimerInterval);
+    dk_setAllAuthViews('authViewSignup3');
+    document.getElementById('signupUserId')?.focus();
+  }
+
+  // ── SIGNUP: Step 3 — Create Account ──────────────────────────────
+  async function dk_signupCreate() {
+    const name = (document.getElementById('signupName')?.value || '').trim();
+    const userId = (document.getElementById('signupUserId')?.value || '').trim();
+    const password = (document.getElementById('signupPassword')?.value || '');
+    const confirmPassword = (document.getElementById('signupConfirmPassword')?.value || '');
+    dk_setAuthError('signup3Error', '');
+
+    if (!userId || /\s/.test(userId)) { dk_setAuthError('signup3Error', 'User ID must not contain spaces.'); return; }
+    if (userId.toLowerCase() === 'admin') { dk_setAuthError('signup3Error', "Cannot use reserved User ID 'admin'."); return; }
+    if (password.length < 6) { dk_setAuthError('signup3Error', 'Password must be at least 6 characters.'); return; }
+    if (password !== confirmPassword) { dk_setAuthError('signup3Error', 'Passwords do not match.'); return; }
+
+    const btn = document.getElementById('btnSignupCreate');
+    if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+
+    try {
+      const passwordHash = await dk_hashPassword(password);
+      const newUser = {
+        id: 'usr_' + Date.now(),
+        user_id: userId,
+        userId: userId,
+        name: name || userId,
+        mobile: _dkOtpStore.mobile,
+        role: 'user',
+        status: 'active',
+        password_hash: passwordHash,
+        passwordHash: passwordHash,
+        createdAt: new Date().toISOString()
+      };
+
+      // Try Supabase insert
+      let saved = false;
+      try {
+        const { error } = await window._supabaseClient.from('users').insert([{
+          user_id: userId,
+          name: newUser.name,
+          mobile: _dkOtpStore.mobile,
+          role: 'user',
+          status: 'active',
+          password_hash: passwordHash
+        }]);
+        if (!error) saved = true;
+        else if (error.message && error.message.includes('duplicate')) {
+          throw new Error('User ID already taken. Choose another.');
+        }
+      } catch (sbErr) {
+        if (sbErr.message && sbErr.message.includes('User ID')) throw sbErr;
+      }
+
+      // Local fallback
+      if (!saved) {
+        const localUsers = JSON.parse(localStorage.getItem('dk_admin_users_db') || '[]');
+        if (localUsers.some(u => u.userId.toLowerCase() === userId.toLowerCase())) {
+          throw new Error('User ID already taken. Choose another.');
+        }
+        localUsers.push({ ...newUser, password: undefined }); // never store plain
+        localStorage.setItem('dk_admin_users_db', JSON.stringify(localUsers));
+      }
+
+      await dk_completeLogin({
+        id: newUser.id, userId, name: newUser.name, role: 'user', status: 'active'
+      }, false);
+
+    } catch (err) {
+      dk_setAuthError('signup3Error', err.message || 'Registration failed.');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Create Account'; }
+    }
+  }
+
+  // ── FORGOT: Step 1 — Find user & send OTP ─────────────────────────
+  async function dk_forgotSendOtp() {
+    const identifier = (document.getElementById('forgotIdentifier')?.value || '').trim();
+    dk_setAuthError('forgot1Error', '');
+    if (!identifier) { dk_setAuthError('forgot1Error', 'Please enter your User ID or mobile number.'); return; }
+
+    const btn = document.getElementById('btnForgotSendOtp');
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+
+    try {
+      let mobileForOtp = null;
+
+      // Try Supabase — find by user_id or mobile
+      try {
+        const isMobile = /^\+?[\d]{10,15}$/.test(identifier.replace(/\s/g,''));
+        const field = isMobile ? 'mobile' : 'user_id';
+        const { data } = await window._supabaseClient.from('users').select('user_id,mobile').eq(field, isMobile ? identifier.replace(/\s/g,'') : identifier).maybeSingle();
+        if (data) {
+          _dkOtpStore.userId = data.user_id;
+          mobileForOtp = data.mobile;
+        }
+      } catch (_) {}
+
+      // Local fallback
+      if (!mobileForOtp) {
+        const localUsers = JSON.parse(localStorage.getItem('dk_admin_users_db') || '[]');
+        const lUser = localUsers.find(u => u.userId.toLowerCase() === identifier.toLowerCase() || u.mobile === identifier);
+        if (lUser) { _dkOtpStore.userId = lUser.userId; mobileForOtp = lUser.mobile || null; }
+      }
+
+      if (!mobileForOtp && identifier.toLowerCase() !== 'admin') {
+        throw new Error('No account found with that User ID or mobile number.');
+      }
+
+      const otp = dk_generateOtp();
+      _dkOtpStore = { ..._dkOtpStore, code: otp, mobile: mobileForOtp || '', expiry: Date.now() + 120000, context: 'forgot' };
+
+      let sent = false;
+      if (mobileForOtp) {
+        try {
+          const { error } = await window._supabaseClient.functions.invoke('send-otp', { body: { mobile: mobileForOtp, otp } });
+          if (!error) sent = true;
+        } catch (_) {}
+      }
+      if (!sent) showToast(`🔑 Reset OTP: ${otp} (dev mode)`, 8000);
+
+      dk_clearOtpBoxes('forgotOtpInputs');
+      dk_setAllAuthViews('authViewForgot2');
+      dk_startOtpTimer('forgotOtpTimer', null);
+      document.querySelector('#forgotOtpInputs .dk-otp-box')?.focus();
+
+    } catch (err) {
+      dk_setAuthError('forgot1Error', err.message || 'Could not send OTP.');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Send OTP Code'; }
+    }
+  }
+
+  // ── FORGOT: Step 2 — Verify OTP ───────────────────────────────────
+  function dk_forgotVerifyOtp() {
+    const entered = dk_getOtpValue('forgotOtpInputs');
+    dk_setAuthError('forgot2Error', '');
+    if (entered.length < 6) { dk_setAuthError('forgot2Error', 'Enter the complete 6-digit code.'); return; }
+    if (Date.now() > _dkOtpStore.expiry) { dk_setAuthError('forgot2Error', 'Code expired.'); return; }
+    if (entered !== _dkOtpStore.code) { dk_setAuthError('forgot2Error', 'Incorrect code. Try again.'); return; }
+    clearInterval(_dkOtpTimerInterval);
+    dk_setAllAuthViews('authViewForgot3');
+    document.getElementById('forgotNewPassword')?.focus();
+  }
+
+  // ── FORGOT: Step 3 — Reset Password ──────────────────────────────
+  async function dk_forgotResetPassword() {
+    const newPassword = (document.getElementById('forgotNewPassword')?.value || '');
+    const confirmPassword = (document.getElementById('forgotConfirmPassword')?.value || '');
+    dk_setAuthError('forgot3Error', '');
+    if (newPassword.length < 6) { dk_setAuthError('forgot3Error', 'Password must be at least 6 characters.'); return; }
+    if (newPassword !== confirmPassword) { dk_setAuthError('forgot3Error', 'Passwords do not match.'); return; }
+
+    const btn = document.getElementById('btnForgotResetPassword');
+    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+
+    try {
+      const passwordHash = await dk_hashPassword(newPassword);
+
+      // Try Supabase update
+      let updated = false;
+      try {
+        if (_dkOtpStore.userId) {
+          const { error } = await window._supabaseClient.from('users').update({ password_hash: passwordHash }).eq('user_id', _dkOtpStore.userId);
+          if (!error) updated = true;
+        }
+      } catch (_) {}
+
+      // Local fallback
+      if (!updated && _dkOtpStore.userId) {
+        const localUsers = JSON.parse(localStorage.getItem('dk_admin_users_db') || '[]');
+        const idx = localUsers.findIndex(u => u.userId === _dkOtpStore.userId);
+        if (idx !== -1) {
+          localUsers[idx].passwordHash = passwordHash;
+          delete localUsers[idx].password; // remove any plain-text legacy
+          localStorage.setItem('dk_admin_users_db', JSON.stringify(localUsers));
+          updated = true;
+        }
+      }
+
+      if (!updated && _dkOtpStore.userId !== 'admin') {
+        throw new Error('Could not update password. Please contact an admin.');
+      }
+
+      closeAuthModal();
+      showToast('✓ Password reset! Please log in with your new password.');
+      openAuthModal('login');
+
+    } catch (err) {
+      dk_setAuthError('forgot3Error', err.message || 'Password reset failed.');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Reset Password'; }
+    }
+  }
+
+  // ── Logout ───────────────────────────────────────────────────────
   function logoutUser() {
     userAuthToken = '';
     currentUser = null;
@@ -3207,13 +3593,32 @@ async function fetchSongs() {
     showToast('Logged out successfully.');
   }
 
+  // ── Event Listeners ───────────────────────────────────────────────
   document.getElementById('btnOpenAuthModal')?.addEventListener('click', () => openAuthModal('login'));
   document.getElementById('btnCloseAuthModal')?.addEventListener('click', closeAuthModal);
-  document.getElementById('tabAuthLogin')?.addEventListener('click', () => openAuthModal('login'));
-  document.getElementById('tabAuthRegister')?.addEventListener('click', () => openAuthModal('register'));
-  document.getElementById('userAuthForm')?.addEventListener('submit', handleAuthFormSubmit);
-  document.getElementById('btnUserLogout')?.addEventListener('click', logoutUser);
+  document.getElementById('tabAuthLogin')?.addEventListener('click', () => dk_switchAuthTab('tabAuthLogin'));
+  document.getElementById('tabAuthRegister')?.addEventListener('click', () => dk_switchAuthTab('tabAuthRegister'));
+  document.getElementById('tabAuthForgot')?.addEventListener('click', () => dk_switchAuthTab('tabAuthForgot'));
 
+  // Login
+  document.getElementById('btnLoginSubmit')?.addEventListener('click', dk_doLogin);
+  document.getElementById('loginPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doLogin(); });
+
+  // Signup
+  document.getElementById('btnSignupSendOtp')?.addEventListener('click', dk_signupSendOtp);
+  document.getElementById('signupMobile')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_signupSendOtp(); });
+  document.getElementById('btnSignupVerifyOtp')?.addEventListener('click', dk_signupVerifyOtp);
+  document.getElementById('btnSignupResendOtp')?.addEventListener('click', () => { dk_clearOtpBoxes('otpInputs'); dk_signupSendOtp(); });
+  document.getElementById('btnSignupCreate')?.addEventListener('click', dk_signupCreate);
+
+  // Forgot PW
+  document.getElementById('btnForgotSendOtp')?.addEventListener('click', dk_forgotSendOtp);
+  document.getElementById('forgotIdentifier')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_forgotSendOtp(); });
+  document.getElementById('btnForgotVerifyOtp')?.addEventListener('click', dk_forgotVerifyOtp);
+  document.getElementById('btnForgotResetPassword')?.addEventListener('click', dk_forgotResetPassword);
+
+  // Logout
+  document.getElementById('btnUserLogout')?.addEventListener('click', logoutUser);
 
   // ============================================================
   // ── MULTILINGUAL VOICE SEARCH SYSTEM ───────────────────────

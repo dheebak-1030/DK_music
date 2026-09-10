@@ -158,6 +158,37 @@ function saveLocalPlaylists(playlists) {
     localStorage.setItem('dk_admin_playlists_db', JSON.stringify(playlists));
 }
 
+async function syncSongToSupabase(action, songData) {
+    try {
+        const client = window.supabaseClient || window._supabaseClient || (typeof getSupabaseClient === 'function' ? await getSupabaseClient() : null);
+        if (!client) return;
+        if (action === 'insert') {
+            await client.from('songs').upsert([{
+                id: songData.id,
+                title: songData.title,
+                artist: songData.artist,
+                album: songData.album || 'Single',
+                cover_url: songData.cover_url,
+                file_url: songData.file_url || songData.audio_url,
+                downloadable: songData.downloadable !== false
+            }]);
+        } else if (action === 'update') {
+            await client.from('songs').update({
+                title: songData.title,
+                artist: songData.artist,
+                album: songData.album,
+                cover_url: songData.cover_url,
+                file_url: songData.file_url || songData.audio_url,
+                downloadable: songData.downloadable
+            }).eq('id', songData.id);
+        } else if (action === 'delete') {
+            await client.from('songs').delete().eq('id', songData.id);
+        }
+    } catch (e) {
+        console.warn('[Admin Supabase Sync]', e);
+    }
+}
+
 function executeLocalFallback(endpoint, method, body) {
     // Users
     if (endpoint === '/api/admin/users') {
@@ -253,6 +284,7 @@ function executeLocalFallback(endpoint, method, body) {
             };
             sngs.push(newSong);
             saveLocalSongs(sngs);
+            syncSongToSupabase('insert', newSong);
             return { success: true, message: "Song added successfully.", song: newSong };
         } else if (method === 'PUT') {
             const idx = sngs.findIndex(s => s.id === body.id);
@@ -264,10 +296,12 @@ function executeLocalFallback(endpoint, method, body) {
             if (body.audio_url) { sngs[idx].audio_url = body.audio_url; sngs[idx].file_url = body.audio_url; }
             if (body.downloadable !== undefined) sngs[idx].downloadable = body.downloadable;
             saveLocalSongs(sngs);
+            syncSongToSupabase('update', sngs[idx]);
             return { success: true, message: "Song updated successfully." };
         } else if (method === 'DELETE') {
             const filtered = sngs.filter(s => s.id !== body.id);
             saveLocalSongs(filtered);
+            syncSongToSupabase('delete', { id: body.id });
             return { success: true, message: "Song deleted successfully." };
         }
     }

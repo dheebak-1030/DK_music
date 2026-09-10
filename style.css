@@ -505,12 +505,21 @@ body {
 /* ===== CONTENT SECTIONS ===== */
 .content-section {
   display: none;
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
+  height: 100%;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 24px 28px 40px;
+  -webkit-overflow-scrolling: touch;
 }
 .content-section.active {
   display: block;
+  flex: 1 1 0;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
   animation: fadeIn 0.25s ease-out;
 }
 
@@ -2967,7 +2976,9 @@ body {
   .main-content {
     border-radius: 0 !important;
     border: none !important;
-    padding-bottom: calc(150px + env(safe-area-inset-bottom, 0px)) !important;
+    padding-bottom: 0 !important;
+    overflow: hidden;
+    min-height: 0;
     -webkit-overflow-scrolling: touch;
     user-select: none;
   }
@@ -3000,7 +3011,10 @@ body {
 
   /* 4. Compact Content Sections */
   .content-section {
-    padding: 12px 14px 20px 14px !important;
+    padding: 12px 14px calc(150px + env(safe-area-inset-bottom, 0px)) 14px !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    -webkit-overflow-scrolling: touch;
   }
   .greeting-row {
     margin-bottom: 12px !important;
@@ -4888,5 +4902,48 @@ td {
   color: #46d369;
 }
 
+/* ===== DK Auth: OTP Boxes ===== */
+.dk-otp-box {
+  width: 42px;
+  height: 52px;
+  border-radius: 10px;
+  border: 2px solid #2d3345;
+  background: #1a1d28;
+  color: #fff;
+  font-size: 1.4rem;
+  font-weight: 700;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  font-family: inherit;
+  caret-color: #45f3ff;
+}
+.dk-otp-box:focus {
+  border-color: #45f3ff;
+  box-shadow: 0 0 0 3px rgba(69,243,255,0.18);
+}
+.dk-otp-box.otp-filled {
+  border-color: #8b5cf6;
+}
 
+/* ===== DK Auth: Password show/hide toggle ===== */
+.dk-pw-toggle {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  color: #8e95a5;
+  cursor: pointer;
+  padding: 4px;
+  font-size: 0.9rem;
+  transition: color 0.2s;
+  margin-top: 10px; /* shift down to align with input, accounting for label */
+}
+.dk-pw-toggle:hover { color: #45f3ff; }
 
+/* ===== 10-second Skip Buttons ===== */
+.ctrl-btn-big {
+  position: relative;
+}
