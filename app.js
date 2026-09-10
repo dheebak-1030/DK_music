@@ -2833,7 +2833,238 @@ async function fetchSongs() {
   });
 
   // ── TAMIL DISCOVERY & AI ASSISTANT MODULE ─────────────────
+  // ============================================================
+  // ── LIGHTWEIGHT RAG + TAMIL/TANGLISH/ENGLISH AI ENGINE ─────
+  // ============================================================
+  window.DK_TamilAIEngine = (function () {
+    const SEMANTIC_MAPPINGS = [
+      {
+        tokens: ['இளையராஜா', 'ராஜா', 'இசைஞானி', 'ilaiyaraaja', 'ilayaraja', 'raja', 'maestro', 'raaja'],
+        artist: 'Ilaiyaraaja',
+        tags: ['ilaiyaraaja', 'raja', 'classic', 'melody']
+      },
+      {
+        tokens: ['ரஹ்மான்', 'ரகுமான்', 'ஏ.ஆர்.ரஹ்மான்', 'இசைப்புயல்', 'ar rahman', 'rahman', 'arr', 'isaipuyal'],
+        artist: 'AR Rahman',
+        tags: ['ar rahman', 'arr', 'romantic', 'classic']
+      },
+      {
+        tokens: ['சித் ஸ்ரீராம்', 'சித்', 'sid sriram', 'sid'],
+        artist: 'Sid Sriram',
+        tags: ['sid sriram', 'melody']
+      },
+      {
+        tokens: ['இம்மான்', 'டி இமான்', 'imman', 'd imman'],
+        artist: 'D. Imman',
+        tags: ['d imman', 'melody']
+      },
+      {
+        tokens: ['அனிருத்', 'anirudh', 'ani', 'rockstar'],
+        artist: 'Anirudh',
+        tags: ['anirudh', 'kuthu', 'upbeat']
+      },
+      {
+        tokens: ['எஸ்பிபி', 'பாலசுப்ரமணியம்', 'spb', 'balasubrahmanyam', 'balu'],
+        artist: 'SPB',
+        tags: ['spb', 'classic']
+      },
+      {
+        tokens: ['சோகம்', 'சோக', 'கண்ணீர்', 'பிரிவு', 'வலி', 'soga', 'sogam', 'vali', 'sad', 'heartbreak', 'pain', 'tear', 'cry'],
+        mood: 'Sad',
+        tags: ['sad', 'emotional', 'heartbreak']
+      },
+      {
+        tokens: ['காதல்', 'அன்பு', 'காதலன்', 'காதலி', 'kadhal', 'kaadhal', 'anbe', 'love', 'romantic', 'romance', 'crush'],
+        mood: 'Romantic',
+        tags: ['romantic', 'love']
+      },
+      {
+        tokens: ['மெலடி', 'இனிமை', 'தென்றல்', 'அமைதி', 'melody', 'melodies', 'soothing', 'peaceful', 'calm', 'sweet', 'breeze'],
+        mood: 'Melody',
+        genre: 'Tamil Melody',
+        tags: ['melody', 'soothing']
+      },
+      {
+        tokens: ['குத்து', 'ஆட்டம்', 'துள்ளல்', 'வெறித்தனம்', 'kuthu', 'koothu', 'party', 'dance', 'energy', 'energetic', 'beat', 'fast'],
+        mood: 'Upbeat',
+        tags: ['kuthu', 'dance', 'party', 'fast']
+      },
+      {
+        tokens: ['பழைய', 'கிளாசிக்', 'நினைவுகள்', 'old', '90s', '80s', 'classic', 'vintage', 'retro', 'nostalgic', 'golden'],
+        mood: 'Nostalgic',
+        tags: ['90s', 'classic', 'nostalgic']
+      },
+      {
+        tokens: ['தாலாட்டு', 'தூக்கம்', 'அமைதியான', 'lullaby', 'sleep', 'chill', 'lofi', 'relax', 'night'],
+        mood: 'Chill',
+        tags: ['chill', 'relax', 'night', 'sleep']
+      }
+    ];
 
+    function normalizeText(text) {
+      return (text || '').toLowerCase().trim().replace(/[\?\!\.,;:\-_'"\(\)]/g, ' ');
+    }
+
+    // RAG Retrieval Layer: Score songs against metadata (title, artist, album, genre, mood, tags, lyrics)
+    function retrieveContext(query, catalog) {
+      if (!catalog || !Array.isArray(catalog)) return { matchedSongs: [], extractedEntities: {} };
+
+      const normQ = normalizeText(query);
+      const queryWords = normQ.split(/\s+/).filter(w => w.length > 0);
+
+      const detectedArtists = new Set();
+      const detectedMoods = new Set();
+      const detectedGenres = new Set();
+      const bonusTags = new Set();
+
+      SEMANTIC_MAPPINGS.forEach(mapping => {
+        const matches = mapping.tokens.some(token => normQ.includes(token.toLowerCase()));
+        if (matches) {
+          if (mapping.artist) detectedArtists.add(mapping.artist.toLowerCase());
+          if (mapping.mood) detectedMoods.add(mapping.mood.toLowerCase());
+          if (mapping.genre) detectedGenres.add(mapping.genre.toLowerCase());
+          if (mapping.tags) mapping.tags.forEach(t => bonusTags.add(t.toLowerCase()));
+        }
+      });
+
+      const scoredSongs = catalog.map(song => {
+        let score = 0;
+        const songTitle = (song.title || '').toLowerCase();
+        const songArtist = (song.artist || '').toLowerCase();
+        const songMovie = (song.movie || song.album || '').toLowerCase();
+        const songGenre = (song.genre || '').toLowerCase();
+        const songMood = (song.mood || '').toLowerCase();
+        const songTags = (song.search_tags || []).map(t => String(t).toLowerCase());
+        const songLyrics = (song.lyrics || []).map(l => (l.text || '').toLowerCase()).join(' ');
+
+        if (songTitle.includes(normQ) && normQ.length > 2) score += 100;
+        if (songArtist.includes(normQ) && normQ.length > 2) score += 70;
+        if (songMovie.includes(normQ) && normQ.length > 2) score += 60;
+
+        queryWords.forEach(word => {
+          if (word.length < 2) return;
+          if (songTitle.includes(word)) score += 30;
+          if (songArtist.includes(word)) score += 25;
+          if (songMovie.includes(word)) score += 20;
+          if (songGenre.includes(word)) score += 18;
+          if (songMood.includes(word)) score += 18;
+          if (songTags.some(t => t.includes(word))) score += 15;
+          if (songLyrics.includes(word)) score += 10;
+        });
+
+        detectedArtists.forEach(art => {
+          if (songArtist.includes(art)) score += 50;
+        });
+        detectedMoods.forEach(m => {
+          if (songMood.includes(m) || songGenre.includes(m)) score += 40;
+        });
+        detectedGenres.forEach(g => {
+          if (songGenre.includes(g)) score += 35;
+        });
+        bonusTags.forEach(t => {
+          if (songTags.some(tag => tag.includes(t)) || songGenre.includes(t) || songMood.includes(t)) score += 25;
+        });
+
+        return { song, score };
+      });
+
+      scoredSongs.sort((a, b) => b.score - a.score);
+
+      const topMatches = scoredSongs.filter(s => s.score > 0).map(s => s.song);
+      const matchedSongs = (topMatches.length > 0 ? topMatches : catalog).slice(0, 6);
+
+      return {
+        matchedSongs,
+        extractedEntities: {
+          detectedArtists: Array.from(detectedArtists),
+          detectedMoods: Array.from(detectedMoods),
+          detectedGenres: Array.from(detectedGenres),
+          hasDirectMatch: topMatches.length > 0
+        }
+      };
+    }
+
+    function searchTamilSongs(catalog, query) {
+      if (!query || !query.trim()) return catalog;
+      const retrieval = retrieveContext(query, catalog);
+      return retrieval.matchedSongs;
+    }
+
+    async function processAIChatQuery(prompt, catalog) {
+      const retrieval = retrieveContext(prompt, catalog);
+      const matches = retrieval.matchedSongs;
+      const entities = retrieval.extractedEntities;
+
+      const hasTamilScript = /[\u0B80-\u0BFF]/.test(prompt);
+      const isTanglish = /\b(paatu|paadal|kudunga|podunga|enakku|ungakitta|venum|super|kuthu|soga|kadhal|nalla|oru)\b/i.test(prompt);
+
+      let responseText = '';
+      let explanation = '';
+
+      if (hasTamilScript) {
+        if (matches.length > 0) {
+          responseText = `வணக்கம்! உங்கள் இசைத் தேர்வுக்கு ஏற்ற சிறந்த தமிழ் பாடல்கள் இதோ 🎵:\n` +
+            matches.slice(0, 3).map((s, i) => `${i + 1}. **${s.title}** (${s.artist})`).join('\n') +
+            `\n\nகீழே உள்ள கார்டை கிளிக் செய்து உடனே கேளுங்கள்!`;
+          explanation = `உங்கள் விருப்பப்படி ${entities.detectedMoods.join(', ') || entities.detectedArtists.join(', ') || 'தமிழ்'} பாடல்கள் தேர்ந்தெடுக்கப்பட்டன.`;
+        } else {
+          responseText = `வணக்கம்! எங்களின் சிறந்த தமிழ் மெலடிகளை கேட்டு மகிழுங்கள்! 🎶`;
+        }
+      } else if (isTanglish) {
+        if (matches.length > 0) {
+          responseText = `Vanakkam! Ungal vibe-ku yetha sema Tamil tracks idho 🎧:\n` +
+            matches.slice(0, 3).map((s, i) => `• **${s.title}** - ${s.artist}`).join('\n') +
+            `\n\nClick any track below to start listening!`;
+          explanation = `Curated matching: ${entities.detectedMoods[0] || entities.detectedArtists[0] || 'popular vibes'}.`;
+        } else {
+          responseText = `Vanakkam! Unga request-ku indha super Tamil songs kandippa ungalukku pidikkum! 🎵`;
+        }
+      } else {
+        if (matches.length > 0) {
+          responseText = `Here are the top tracks from our catalog matching your vibe 🎶:\n` +
+            matches.slice(0, 3).map((s, i) => `• **${s.title}** by *${s.artist}*`).join('\n') +
+            `\n\nTap on any song below to play immediately!`;
+          explanation = entities.hasDirectMatch
+            ? `Retrieved based on matching genre, artist (${entities.detectedArtists.join(', ') || 'Tamil classics'}), and mood.`
+            : `Showing our top recommended timeless Tamil melodies.`;
+        } else {
+          responseText = `Here are some popular Tamil tracks curated for your listening pleasure! 🎧`;
+        }
+      }
+
+      return {
+        text: responseText,
+        matchedSongs: matches,
+        explanation: explanation
+      };
+    }
+
+    function getAIRecommendations(catalog, targetSong) {
+      if (!targetSong || !catalog) return [];
+      const genre = (targetSong.genre || '').toLowerCase();
+      const artist = (targetSong.artist || '').toLowerCase();
+      const mood = (targetSong.mood || '').toLowerCase();
+
+      return catalog
+        .filter(s => s.id !== targetSong.id)
+        .map(s => {
+          let score = 0;
+          if (genre && (s.genre || '').toLowerCase().includes(genre)) score += 40;
+          if (mood && (s.mood || '').toLowerCase().includes(mood)) score += 30;
+          if (artist && (s.artist || '').toLowerCase().includes(artist)) score += 35;
+          return { song: s, score };
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 8);
+    }
+
+    return {
+      searchTamilSongs,
+      processAIChatQuery,
+      getAIRecommendations,
+      retrieveContext
+    };
+  })();
 
   // ── AI Assistant Chat Controller ────────────────────────────
   let aiChatInitialized = false;
@@ -3342,50 +3573,162 @@ async function fetchSongs() {
     showToast(`✓ Welcome ${userObj.name || userObj.userId}!`);
   }
 
+  // ── Helper: Format Mobile Number to International E.164 (+91 for India) ──
+  function dk_formatMobileNumber(raw) {
+    let cleaned = (raw || '').replace(/[\s\-\(\)]/g, '');
+    if (cleaned.startsWith('00')) cleaned = '+' + cleaned.slice(2);
+    if (!cleaned.startsWith('+')) {
+      if (cleaned.startsWith('0') && cleaned.length === 11) {
+        cleaned = '+91' + cleaned.slice(1);
+      } else if (cleaned.length === 10 && /^[6-9]/.test(cleaned)) {
+        cleaned = '+91' + cleaned;
+      } else if (cleaned.length === 12 && cleaned.startsWith('91')) {
+        cleaned = '+' + cleaned;
+      } else {
+        cleaned = '+' + cleaned;
+      }
+    }
+    return cleaned;
+  }
+
   // ── SIGNUP: Step 1 — Send OTP ─────────────────────────────────────
-  async function dk_signupSendOtp() {
-    const mobile = (document.getElementById('signupMobile')?.value || '').replace(/\s/g, '');
+  async function dk_signupSendOtp(isResend = false) {
+    const rawMobile = (document.getElementById('signupMobile')?.value || '').trim();
     dk_setAuthError('signup1Error', '');
-    if (!/^\+?[\d]{10,15}$/.test(mobile)) { dk_setAuthError('signup1Error', 'Enter a valid mobile number.'); return; }
+    dk_setAuthError('signup2Error', '');
 
-    // Check not already registered
-    try {
-      const { data } = await window._supabaseClient.from('users').select('user_id').eq('mobile', mobile).maybeSingle();
-      if (data) { dk_setAuthError('signup1Error', 'This mobile is already registered. Please log in.'); return; }
-    } catch (_) {}
-
-    const btn = document.getElementById('btnSignupSendOtp');
-    if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
-
-    const otp = dk_generateOtp();
-    _dkOtpStore = { code: otp, mobile, userId: '', expiry: Date.now() + 120000, context: 'signup' };
-
-    // Attempt Supabase Edge Function / fallback: show OTP in a dev toast
-    let sent = false;
-    try {
-      const { error } = await window._supabaseClient.functions.invoke('send-otp', { body: { mobile, otp } });
-      if (!error) sent = true;
-    } catch (_) {}
-    if (!sent) {
-      // Dev/fallback: show code in toast
-      showToast(`📱 OTP: ${otp} (dev mode)`, 8000);
+    const mobile = dk_formatMobileNumber(rawMobile);
+    if (!/^\+[1-9]\d{9,14}$/.test(mobile)) {
+      dk_setAuthError('signup1Error', 'Enter a valid mobile number with country code (e.g. +91 9876543210).');
+      return;
     }
 
-    document.getElementById('signupMobileDisplay').textContent = mobile;
+    const btn = document.getElementById(isResend ? 'btnSignupResendOtp' : 'btnSignupSendOtp');
+    const origText = btn ? btn.textContent : 'Send OTP Code';
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending OTP...';
+    }
+
+    // Check if not already registered
+    try {
+      const sb = window.supabaseClient || window._supabaseClient;
+      if (sb) {
+        const { data } = await sb.from('users').select('user_id').eq('mobile', mobile).maybeSingle();
+        if (data) {
+          dk_setAuthError('signup1Error', 'This mobile number is already registered. Please log in.');
+          if (btn) { btn.disabled = false; btn.textContent = origText; }
+          return;
+        }
+      }
+    } catch (_) {}
+
+    const fallbackOtp = dk_generateOtp();
+    _dkOtpStore = { code: fallbackOtp, mobile, userId: '', expiry: Date.now() + 120000, context: 'signup' };
+
+    // Invoke Supabase Auth Phone OTP
+    const sb = window.supabaseClient || window._supabaseClient;
+    if (sb && sb.auth && typeof sb.auth.signInWithOtp === 'function') {
+      try {
+        const { data, error } = await sb.auth.signInWithOtp({
+          phone: mobile,
+          options: {
+            channel: 'sms'
+          }
+        });
+
+        if (error) {
+          console.warn('[Supabase Auth Phone OTP]:', error.message);
+          // Check if SMS provider is not configured or rate limited in Supabase Dashboard
+          if (/provider|sms|not configured|disabled|unsupported|Signups not allowed/i.test(error.message)) {
+            showToast(`📱 SMS Provider setup pending in Supabase Dashboard. Dev OTP: ${fallbackOtp}`, 8000);
+          } else {
+            dk_setAuthError(isResend ? 'signup2Error' : 'signup1Error', error.message);
+            if (btn) { btn.disabled = false; btn.textContent = origText; }
+            return;
+          }
+        } else {
+          showToast(`✓ SMS OTP code sent to ${mobile}`);
+        }
+      } catch (err) {
+        console.warn('[Supabase Auth Error]:', err);
+        showToast(`📱 Dev OTP: ${fallbackOtp}`, 8000);
+      }
+    } else {
+      showToast(`📱 Dev OTP: ${fallbackOtp}`, 8000);
+    }
+
+    const displayEl = document.getElementById('signupMobileDisplay');
+    if (displayEl) displayEl.textContent = mobile;
+
     dk_clearOtpBoxes('otpInputs');
     dk_setAllAuthViews('authViewSignup2');
-    dk_startOtpTimer('signupOtpTimer', 'btnSignupResendOtp');
-    if (btn) { btn.disabled = false; btn.textContent = 'Send OTP Code'; }
-    document.querySelector('#otpInputs .dk-otp-box')?.focus();
+    dk_startOtpTimer('signupOtpTimer', 'btnSignupResendOtp', 60);
+
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = isResend ? 'Resend Code' : 'Send OTP Code';
+    }
+
+    setTimeout(() => {
+      document.querySelector('#otpInputs .dk-otp-box')?.focus();
+    }, 150);
   }
 
   // ── SIGNUP: Step 2 — Verify OTP ───────────────────────────────────
-  function dk_signupVerifyOtp() {
+  async function dk_signupVerifyOtp() {
     const entered = dk_getOtpValue('otpInputs');
     dk_setAuthError('signup2Error', '');
-    if (entered.length < 6) { dk_setAuthError('signup2Error', 'Enter the complete 6-digit code.'); return; }
-    if (Date.now() > _dkOtpStore.expiry) { dk_setAuthError('signup2Error', 'Code expired. Please resend.'); return; }
-    if (entered !== _dkOtpStore.code) { dk_setAuthError('signup2Error', 'Incorrect code. Try again.'); return; }
+    if (entered.length < 6) {
+      dk_setAuthError('signup2Error', 'Enter the complete 6-digit verification code.');
+      return;
+    }
+
+    const btn = document.getElementById('btnSignupVerifyOtp');
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
+    }
+
+    const mobile = _dkOtpStore.mobile;
+    let isVerified = false;
+
+    // 1. Try Supabase Auth verifyOtp
+    const sb = window.supabaseClient || window._supabaseClient;
+    if (sb && sb.auth && typeof sb.auth.verifyOtp === 'function') {
+      try {
+        const { data, error } = await sb.auth.verifyOtp({
+          phone: mobile,
+          token: entered,
+          type: 'sms'
+        });
+        if (!error && (data?.session || data?.user)) {
+          isVerified = true;
+        } else if (error) {
+          console.warn('[Supabase Auth Verify]:', error.message);
+        }
+      } catch (e) {
+        console.warn('[Supabase Auth Verify Exception]:', e);
+      }
+    }
+
+    // 2. Dev code fallback check
+    if (!isVerified && _dkOtpStore.code && entered === _dkOtpStore.code) {
+      if (Date.now() <= _dkOtpStore.expiry) {
+        isVerified = true;
+      }
+    }
+
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Verify Code';
+    }
+
+    if (!isVerified) {
+      dk_setAuthError('signup2Error', 'Incorrect or expired code. Please try again or click Resend.');
+      return;
+    }
+
     clearInterval(_dkOtpTimerInterval);
     dk_setAllAuthViews('authViewSignup3');
     document.getElementById('signupUserId')?.focus();
@@ -3497,14 +3840,24 @@ async function fetchSongs() {
       }
 
       const otp = dk_generateOtp();
-      _dkOtpStore = { ..._dkOtpStore, code: otp, mobile: mobileForOtp || '', expiry: Date.now() + 120000, context: 'forgot' };
+      const formattedForgotMobile = mobileForOtp ? dk_formatMobileNumber(mobileForOtp) : '';
+      _dkOtpStore = { ..._dkOtpStore, code: otp, mobile: formattedForgotMobile || mobileForOtp || '', expiry: Date.now() + 120000, context: 'forgot' };
 
       let sent = false;
-      if (mobileForOtp) {
-        try {
-          const { error } = await window._supabaseClient.functions.invoke('send-otp', { body: { mobile: mobileForOtp, otp } });
-          if (!error) sent = true;
-        } catch (_) {}
+      if (formattedForgotMobile) {
+        const sb = window.supabaseClient || window._supabaseClient;
+        if (sb && sb.auth && typeof sb.auth.signInWithOtp === 'function') {
+          try {
+            const { error } = await sb.auth.signInWithOtp({
+              phone: formattedForgotMobile,
+              options: { channel: 'sms' }
+            });
+            if (!error) {
+              sent = true;
+              showToast(`✓ Reset SMS code sent to ${formattedForgotMobile}`);
+            }
+          } catch (_) {}
+        }
       }
       if (!sent) showToast(`🔑 Reset OTP: ${otp} (dev mode)`, 8000);
 
@@ -3722,8 +4075,15 @@ async function fetchSongs() {
 
       showToast(`🎤 Voice Search: "${q}"`);
       if (searchInput) searchInput.value = q;
-      navigateTo('search');
-      renderSearchSection();
+
+      if (currentSection === 'ai-assistant') {
+        const chatInput = document.getElementById('aiChatInput');
+        if (chatInput) chatInput.value = q;
+        handleSendAIChat(q);
+      } else {
+        navigateTo('search');
+        renderSearchSection();
+      }
       stopVoiceSearch();
     }
   }

@@ -505,21 +505,27 @@ body {
 /* ===== CONTENT SECTIONS ===== */
 .content-section {
   display: none;
-  flex: 1 1 0;
+  flex: 1 1 auto;
   min-height: 0;
-  height: 100%;
-  overflow-y: auto;
+  height: auto;
+  max-height: 100%;
+  overflow-y: auto !important;
   overflow-x: hidden;
-  padding: 24px 28px 40px;
+  padding: 24px 28px 60px;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
 }
 .content-section.active {
   display: block;
-  flex: 1 1 0;
+  flex: 1 1 auto;
   min-height: 0;
-  height: 100%;
-  overflow-y: auto;
+  height: auto;
+  max-height: 100%;
+  overflow-y: auto !important;
   overflow-x: hidden;
+  padding: 24px 28px 60px;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
   animation: fadeIn 0.25s ease-out;
 }
 
@@ -1473,6 +1479,7 @@ body {
   left: 0;
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   background: rgba(0, 0, 0, 0.75);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -1481,18 +1488,27 @@ body {
   justify-content: center;
   z-index: 1000;
   animation: fadeIn 0.2s ease-out;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
+  padding: 24px 12px;
+  box-sizing: border-box;
 }
 .modal-backdrop.hidden { display: none !important; }
 
 .modal-card {
   width: 90%;
   max-width: 420px;
+  max-height: 90vh;
+  max-height: 90dvh;
+  overflow-y: auto !important;
+  -webkit-overflow-scrolling: touch;
   background: var(--bg-surface);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
   padding: 24px;
   box-shadow: var(--shadow-lg), var(--shadow-glow);
   animation: modalScale 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  margin: auto;
 }
 @keyframes modalScale {
   from { transform: scale(0.92); opacity: 0; }
@@ -3015,6 +3031,10 @@ body {
     overflow-y: auto !important;
     overflow-x: hidden !important;
     -webkit-overflow-scrolling: touch;
+    height: auto !important;
+    max-height: 100% !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
   }
   .greeting-row {
     margin-bottom: 12px !important;
@@ -3882,6 +3902,7 @@ td {
   margin-bottom: 6px;
   background: linear-gradient(135deg, #ffffff 30%, #e2e8f0 70%, #c084fc 100%);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 .jam-card-sub {
@@ -4162,6 +4183,7 @@ td {
   color: #fff;
   background: linear-gradient(135deg, #ffffff 0%, #c084fc 100%);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 .jam-code-actions {

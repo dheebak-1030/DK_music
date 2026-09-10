@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <link rel="stylesheet" href="style.css">
     <style>
-        body {
+        html, body {
             background-color: #0b0c10;
             color: #c5c6c7;
             font-family: 'Inter', sans-serif;
@@ -17,14 +17,17 @@
             padding: 0;
             height: auto !important;
             min-height: 100vh !important;
+            min-height: 100dvh !important;
             overflow-y: auto !important;
             overflow-x: hidden !important;
+            -webkit-overflow-scrolling: touch;
         }
 
         .admin-page-container {
             max-width: 1280px;
             margin: 0 auto;
-            padding: 24px 20px;
+            padding: 24px 20px 80px 20px;
+            min-height: 100%;
         }
 
         .admin-nav-tabs {
@@ -58,10 +61,38 @@
 
         .tab-content-panel {
             display: none;
+            overflow-y: visible;
         }
 
         .tab-content-panel.active {
             display: block;
+            overflow-y: visible;
+            animation: fadeIn 0.2s ease-out;
+        }
+
+        @media (max-width: 768px) {
+            .admin-page-container {
+                padding: 14px 12px 100px 12px;
+            }
+            .admin-nav-tabs {
+                gap: 6px;
+                overflow-x: auto;
+                flex-wrap: nowrap;
+                padding-bottom: 8px;
+                -webkit-overflow-scrolling: touch;
+            }
+            .tab-btn {
+                padding: 8px 14px;
+                font-size: 0.8rem;
+                white-space: nowrap;
+                flex-shrink: 0;
+            }
+            .admin-card {
+                padding: 14px;
+            }
+            .search-admin-input {
+                max-width: 100%;
+            }
         }
 
         .admin-card {
@@ -722,20 +753,22 @@
                     <button id="btnAddSongToCurrentPlaylist" class="btn-primary"><i class="fas fa-plus"></i> Add Track to Playlist</button>
                 </div>
 
-                <table class="admin-table" style="margin-top:16px;">
-                    <thead>
-                        <tr>
-                            <th>Order</th>
-                            <th>Song Title</th>
-                            <th>Artist</th>
-                            <th>Reorder</th>
-                            <th>Remove</th>
-                        </tr>
-                    </thead>
-                    <tbody id="playlistTracksTableBody">
-                        <!-- JS Populated -->
-                    </tbody>
-                </table>
+                <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;">
+                    <table class="admin-table" style="margin-top:16px;">
+                        <thead>
+                            <tr>
+                                <th>Order</th>
+                                <th>Song Title</th>
+                                <th>Artist</th>
+                                <th>Reorder</th>
+                                <th>Remove</th>
+                            </tr>
+                        </thead>
+                        <tbody id="playlistTracksTableBody">
+                            <!-- JS Populated -->
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
 

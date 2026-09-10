@@ -7,15 +7,32 @@
   'use strict';
 
   // State
+  // State
   let currentRoomCode = null;
   let isHost = false;
   let isConnected = false;
   let isSyncing = true;
-  let myDeviceId = 'dev_' + Math.random().toString(36).substring(2, 9);
+  let myDeviceId = (function () {
+    try {
+      let id = sessionStorage.getItem('dk_jam_device_id');
+      if (!id) {
+        id = 'dev_' + Math.random().toString(36).substring(2, 9);
+        sessionStorage.setItem('dk_jam_device_id', id);
+      }
+      return id;
+    } catch (e) {
+      return 'dev_' + Math.random().toString(36).substring(2, 9);
+    }
+  })();
+  const isMobileDev = typeof navigator !== 'undefined' && /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent || '');
+  const myDeviceLabel = isMobileDev ? 'Mobile' : 'Desktop';
+
   let onlineChannel = null;
   let offlineChannel = null;
   let isReceivingRemoteAction = false;
+  let lastSeekSent = 0;
   let peerCount = 0;
+  const connectedDevices = new Map();
 
   // DOM Elements
   let jamModal = null;
@@ -116,10 +133,53 @@
     }
   });
 
+  // ── Render Participant Devices in UI ────────────────────────
+  function renderDevicesList() {
+    const container = document.getElementById('jamDevicesList');
+    const countPill = document.getElementById('jamDeviceCountPill');
+    if (countPill) countPill.textContent = `${peerCount} Active`;
+    if (!container) return;
+
+    const list = Array.from(connectedDevices.values());
+    container.innerHTML = list.map(d => {
+      const isMe = d.deviceId === myDeviceId;
+      const shortId = (d.deviceId || 'DEV').replace('dev_', '').toUpperCase();
+      const label = d.label || (isMe ? 'This Device' : 'Guest Device');
+      return `
+      <div style="display:flex; align-items:center; justify-content:space-between; background:rgba(255,255,255,0.04); padding:6px 10px; border-radius:6px; font-size:0.82rem; margin-bottom:4px;">
+          <div style="display:flex; align-items:center; gap:8px;">
+              <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#22c55e; box-shadow:0 0 6px #22c55e;"></span>
+              <span style="font-weight:600; color:#fff;">${escHtml(label)} (${escHtml(shortId)})</span>
+              ${isMe ? '<span style="font-size:0.7rem; background:rgba(168,85,247,0.25); color:#c084fc; padding:1px 6px; border-radius:4px; font-weight:700;">You</span>' : ''}
+          </div>
+          <span style="font-size:0.72rem; color:${d.isHost ? '#45f3ff' : '#94a3b8'}; font-weight:700; background:rgba(255,255,255,0.06); padding:2px 8px; border-radius:4px;">
+              ${d.isHost ? '👑 HOST' : 'MEMBER'}
+          </span>
+      </div>`;
+    }).join('');
+  }
+
+  function escHtml(str) {
+    if (!str) return '';
+    return String(str).replace(/[&<>"']/g, m => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
+  }
+
   // ── Communication Channels Setup ────────────────────────────
   function setupChannels(code) {
     cleanupChannels();
     currentRoomCode = code;
+
+    connectedDevices.clear();
+    connectedDevices.set(myDeviceId, {
+      deviceId: myDeviceId,
+      label: myDeviceLabel,
+      isHost: isHost,
+      isSelf: true,
+      onlineAt: Date.now()
+    });
+    peerCount = Math.max(1, connectedDevices.size);
+    renderDevicesList();
+    updatePeerCountUI();
 
     // 1. Offline Channel (BroadcastChannel + LocalStorage fallback)
     try {
@@ -131,11 +191,15 @@
       console.warn('[JamSync] BroadcastChannel error:', e);
     }
 
-    // 2. Online Channel (Supabase Realtime Broadcast)
-    if (window.supabaseClient && isNetworkOnline()) {
+    // 2. Online Channel (Supabase Realtime Broadcast & Presence)
+    const sb = window.supabaseClient || window._supabaseClient;
+    if (sb && isNetworkOnline()) {
       try {
-        onlineChannel = window.supabaseClient.channel('jam_' + code, {
-          config: { broadcast: { self: false } }
+        onlineChannel = sb.channel('jam_' + code, {
+          config: {
+            broadcast: { self: false },
+            presence: { key: myDeviceId }
+          }
         });
 
         onlineChannel.on('broadcast', { event: 'jam_event' }, (payload) => {
@@ -144,21 +208,53 @@
           }
         });
 
-        onlineChannel.on('presence', { event: 'sync' }, () => {
+        const syncPresenceState = () => {
+          if (!onlineChannel) return;
           const state = onlineChannel.presenceState();
-          const count = Object.keys(state).length;
-          peerCount = Math.max(1, count);
+          connectedDevices.clear();
+          for (const key in state) {
+            (state[key] || []).forEach(p => {
+              const devId = p.deviceId || key;
+              connectedDevices.set(devId, {
+                deviceId: devId,
+                label: p.label || 'Device',
+                isHost: !!p.isHost,
+                isSelf: devId === myDeviceId,
+                onlineAt: p.onlineAt || Date.now()
+              });
+            });
+          }
+          // Ensure self is preserved
+          connectedDevices.set(myDeviceId, {
+            deviceId: myDeviceId,
+            label: myDeviceLabel,
+            isHost: isHost,
+            isSelf: true,
+            onlineAt: Date.now()
+          });
+          peerCount = Math.max(1, connectedDevices.size);
+          renderDevicesList();
           updatePeerCountUI();
-        });
+        };
+
+        onlineChannel.on('presence', { event: 'sync' }, syncPresenceState);
+        onlineChannel.on('presence', { event: 'join' }, syncPresenceState);
+        onlineChannel.on('presence', { event: 'leave' }, syncPresenceState);
 
         onlineChannel.subscribe(async (status) => {
           if (status === 'SUBSCRIBED') {
             console.log(`[JamSync] Subscribed to Supabase online channel for room: ${code}`);
-            await onlineChannel.track({ deviceId: myDeviceId, onlineAt: Date.now() });
-            // Send ping to announce presence
+            await onlineChannel.track({
+              deviceId: myDeviceId,
+              label: myDeviceLabel,
+              isHost: isHost,
+              onlineAt: Date.now()
+            });
+            // Announce presence to peers
             sendBroadcastMessage({
               type: 'PEER_JOINED',
               deviceId: myDeviceId,
+              label: myDeviceLabel,
               isHost: isHost,
               timestamp: Date.now()
             });
@@ -173,15 +269,18 @@
     sendBroadcastMessage({
       type: 'PEER_JOINED',
       deviceId: myDeviceId,
+      label: myDeviceLabel,
       isHost: isHost,
       timestamp: Date.now()
     });
   }
 
   function cleanupChannels() {
-    if (onlineChannel && window.supabaseClient) {
+    const sb = window.supabaseClient || window._supabaseClient;
+    if (onlineChannel && sb) {
       try {
-        window.supabaseClient.removeChannel(onlineChannel);
+        onlineChannel.untrack();
+        sb.removeChannel(onlineChannel);
       } catch (e) {}
       onlineChannel = null;
     }
@@ -243,32 +342,92 @@
 
     // Handle Peer Join
     if (data.type === 'PEER_JOINED') {
-      peerCount = Math.max(2, peerCount + 1);
+      if (data.deviceId) {
+        connectedDevices.set(data.deviceId, {
+          deviceId: data.deviceId,
+          label: data.label || 'Device',
+          isHost: !!data.isHost,
+          isSelf: false,
+          onlineAt: data.timestamp || Date.now()
+        });
+      }
+      peerCount = Math.max(1, connectedDevices.size);
       isConnected = true;
       triggerHaptic('success');
-      toast(`🎉 Friend connected to room ${currentRoomCode}!`);
+      toast(`🎉 Device joined room ${currentRoomCode}! (${peerCount} connected)`);
+      renderDevicesList();
       updateConnectedUI();
 
-      // If we are Host and currently playing a song, send current state to the new friend
-      if (isHost && window.audioEl && !window.audioEl.paused) {
+      // Send presence acknowledgment so the newcomer knows about us
+      sendBroadcastMessage({
+        type: 'PEER_PRESENCE',
+        deviceId: myDeviceId,
+        label: myDeviceLabel,
+        isHost: isHost
+      });
+
+      // If we are Host, send full state sync to the newcomer
+      const audio = document.getElementById('audioPlayer');
+      if (isHost && audio) {
         const curSong = window.currentQueue ? window.currentQueue[window.currentSongIndex] : null;
         if (curSong) {
           sendBroadcastMessage({
-            type: 'PLAY_TRACK',
+            type: 'STATE_SYNC',
             song: curSong,
             songIndex: window.currentSongIndex,
-            currentTime: window.audioEl.currentTime,
-            isPlaying: true
+            currentTime: audio.currentTime,
+            isPlaying: !audio.paused,
+            queue: (window.currentQueue || []).slice(0, 50)
           });
         }
       }
       return;
     }
 
+    // Handle Peer Presence Response
+    if (data.type === 'PEER_PRESENCE') {
+      if (data.deviceId) {
+        connectedDevices.set(data.deviceId, {
+          deviceId: data.deviceId,
+          label: data.label || 'Device',
+          isHost: !!data.isHost,
+          isSelf: false,
+          onlineAt: Date.now()
+        });
+        peerCount = Math.max(1, connectedDevices.size);
+        renderDevicesList();
+        updatePeerCountUI();
+      }
+      return;
+    }
+
+    // Handle State Sync from Host
+    if (data.type === 'STATE_SYNC') {
+      if (!isSyncing) return;
+      isReceivingRemoteAction = true;
+      try {
+        if (Array.isArray(data.queue) && data.queue.length > 0 && (!window.currentQueue || window.currentQueue.length === 0)) {
+          window.currentQueue = data.queue;
+        }
+        if (data.song) {
+          syncPlayTrack(data.song, data.songIndex ?? 0, data.currentTime ?? 0, !!data.isPlaying, data.sentAt);
+        }
+      } finally {
+        setTimeout(() => {
+          isReceivingRemoteAction = false;
+        }, 500);
+      }
+      return;
+    }
+
     // Handle Peer Leave
     if (data.type === 'PEER_LEFT') {
-      peerCount = Math.max(1, peerCount - 1);
-      toast('Friend left the room');
+      if (data.deviceId) {
+        connectedDevices.delete(data.deviceId);
+      }
+      peerCount = Math.max(1, connectedDevices.size);
+      toast('A device left the room');
+      renderDevicesList();
       updatePeerCountUI();
       return;
     }
@@ -282,27 +441,34 @@
 
     try {
       if (data.type === 'PLAY_TRACK') {
-        toast(`▶️ Friend playing: "${data.song?.title || 'Song'}"`);
-        syncPlayTrack(data.song, data.songIndex, data.currentTime, data.isPlaying);
+        toast(`▶️ Jam Room playing: "${data.song?.title || 'Song'}"`);
+        syncPlayTrack(data.song, data.songIndex, data.currentTime, data.isPlaying, data.sentAt);
       } else if (data.type === 'PAUSE') {
         audio.pause();
-        toast('⏸️ Friend paused playback');
+        toast('⏸️ Playback paused');
       } else if (data.type === 'RESUME') {
-        if (Math.abs(audio.currentTime - (data.currentTime || 0)) > 0.4) {
-          audio.currentTime = data.currentTime;
+        const latency = Math.max(0, (Date.now() - (data.sentAt || Date.now())) / 1000);
+        const expectedTime = (data.currentTime || 0) + latency;
+        if (Math.abs(audio.currentTime - expectedTime) > 0.4) {
+          audio.currentTime = expectedTime;
         }
         audio.play().catch(() => {});
-        toast('▶️ Friend resumed playback');
+        toast('▶️ Playback resumed');
       } else if (data.type === 'SEEK') {
         if (typeof data.currentTime === 'number') {
-          audio.currentTime = data.currentTime;
-          toast(`⏩ Seeked to ${fmtTime(data.currentTime)}`);
+          const latency = data.isPlaying ? Math.max(0, (Date.now() - (data.sentAt || Date.now())) / 1000) : 0;
+          audio.currentTime = Math.max(0, (data.currentTime || 0) + latency);
+          toast(`⏩ Seeked to ${fmtTime(audio.currentTime)}`);
         }
+      } else if (data.type === 'NEXT_TRACK') {
+        if (typeof window.nextSong === 'function') window.nextSong();
+      } else if (data.type === 'PREV_TRACK') {
+        if (typeof window.prevSong === 'function') window.prevSong();
       }
     } finally {
       setTimeout(() => {
         isReceivingRemoteAction = false;
-      }, 350);
+      }, 400);
     }
   }
 
@@ -314,9 +480,12 @@
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   }
 
-  // Synchronize playing a specific song
-  async function syncPlayTrack(song, songIdx, targetTime = 0, autoPlay = true) {
+  // Synchronize playing a specific song with timestamp correction
+  async function syncPlayTrack(song, songIdx, targetTime = 0, autoPlay = true, sentAt = Date.now()) {
     if (!song) return;
+
+    const latency = autoPlay ? Math.max(0, (Date.now() - (sentAt || Date.now())) / 1000) : 0;
+    const initialSeek = (targetTime || 0) + latency;
 
     // Check if song is in current window.songs
     let foundIdx = -1;
@@ -331,7 +500,7 @@
       // Play directly through audioEl
       const audio = document.getElementById('audioPlayer');
       if (audio) {
-        // Offline check: see if friend has cached audio
+        // Offline check: see if device has cached audio
         let playSrc = song.file_url;
         if (window.DK_OfflineDB) {
           try {
@@ -346,7 +515,7 @@
 
     const audio = document.getElementById('audioPlayer');
     if (audio) {
-      if (targetTime > 0) audio.currentTime = targetTime;
+      if (initialSeek > 0) audio.currentTime = initialSeek;
       if (autoPlay) audio.play().catch(() => {});
     }
 
@@ -364,6 +533,7 @@
       sendBroadcastMessage({
         type: 'RESUME',
         currentTime: audio.currentTime,
+        isPlaying: true,
         song: curSong
       });
     });
@@ -372,15 +542,19 @@
       if (isReceivingRemoteAction || !currentRoomCode || !isSyncing) return;
       sendBroadcastMessage({
         type: 'PAUSE',
-        currentTime: audio.currentTime
+        currentTime: audio.currentTime,
+        isPlaying: false
       });
     });
 
     audio.addEventListener('seeked', () => {
       if (isReceivingRemoteAction || !currentRoomCode || !isSyncing) return;
+      if (Date.now() - lastSeekSent < 250) return;
+      lastSeekSent = Date.now();
       sendBroadcastMessage({
         type: 'SEEK',
-        currentTime: audio.currentTime
+        currentTime: audio.currentTime,
+        isPlaying: !audio.paused
       });
     });
 
@@ -406,6 +580,18 @@
         return res;
       };
     }
+
+    // Hook Next & Prev controls
+    document.getElementById('btnNext')?.addEventListener('click', () => {
+      if (!isReceivingRemoteAction && currentRoomCode && isSyncing) {
+        sendBroadcastMessage({ type: 'NEXT_TRACK' });
+      }
+    });
+    document.getElementById('btnPrev')?.addEventListener('click', () => {
+      if (!isReceivingRemoteAction && currentRoomCode && isSyncing) {
+        sendBroadcastMessage({ type: 'PREV_TRACK' });
+      }
+    });
   }
 
   // ── UI Controller & Modal Setup ─────────────────────────────
@@ -553,6 +739,13 @@
 
     attachLocalAudioBroadcastHooks();
     updateNetworkStatusBadges();
+
+    window.addEventListener('beforeunload', () => {
+      if (currentRoomCode) {
+        sendBroadcastMessage({ type: 'PEER_LEFT', deviceId: myDeviceId });
+        cleanupChannels();
+      }
+    });
   }
 
   function switchTab(tab) {
@@ -585,7 +778,7 @@
     isConnected = true;
     peerCount = 1;
     updateConnectedUI();
-    toast(`Jam Room ${code} created! Share with your friend.`);
+    toast(`Jam Room ${code} created! Share with your friends.`);
   }
 
   function joinRoom(code) {
@@ -594,18 +787,19 @@
     setupChannels(code);
 
     isConnected = true;
-    peerCount = 2;
+    peerCount = Math.max(1, connectedDevices.size);
     updateConnectedUI();
     toast(`Connected to Room ${code}!`);
   }
 
   function disconnectSession() {
     triggerHaptic('medium');
-    sendBroadcastMessage({ type: 'PEER_LEFT' });
+    sendBroadcastMessage({ type: 'PEER_LEFT', deviceId: myDeviceId });
     cleanupChannels();
     currentRoomCode = null;
     isConnected = false;
     peerCount = 0;
+    connectedDevices.clear();
 
     if (viewActive) viewActive.style.display = 'none';
     if (topbarJamBadge) topbarJamBadge.classList.add('hidden');
@@ -636,8 +830,8 @@
   function updatePeerCountUI() {
     if (jamPeerStatusText) {
       jamPeerStatusText.innerHTML = peerCount > 1
-        ? `<i class="fas fa-user-group" style="color:#22c55e;"></i> 2 Devices Paired &amp; Synced`
-        : `<i class="fas fa-satellite-dish" style="color:#a855f7;"></i> Room Code Ready &bull; Waiting for friend...`;
+        ? `<i class="fas fa-users" style="color:#22c55e;"></i> ${peerCount} Devices Synced in Jam`
+        : `<i class="fas fa-satellite-dish" style="color:#a855f7;"></i> Room Code Ready &bull; Waiting for friends...`;
     }
   }
 
@@ -679,7 +873,9 @@
     joinRoom,
     disconnectSession,
     getRoomCode: () => currentRoomCode,
-    isConnected: () => isConnected
+    isConnected: () => isConnected,
+    getPeerCount: () => peerCount,
+    getDevices: () => Array.from(connectedDevices.values())
   };
 
 })();
