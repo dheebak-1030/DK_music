@@ -3761,88 +3761,144 @@ async function fetchAndMergePlaylists() {
     } catch (_) {}
   }
 
+  // In-flight guard flags to prevent duplicate OTP requests
+  let _isSendingLoginOtp = false;
+  let _isVerifyingLoginOtp = false;
+  let _isSendingSignupOtp = false;
+  let _isVerifyingSignupOtp = false;
+
+  // ── Helper: Format Mobile Number to International E.164 (+91 for India) ──
+  function dk_formatMobileNumber(raw) {
+    if (!raw) return '';
+    let cleaned = String(raw).trim().replace(/[^\d+]/g, '');
+    if (cleaned.startsWith('00')) cleaned = '+' + cleaned.slice(2);
+    if (cleaned.startsWith('+')) return cleaned;
+    if (/^[6-9]\d{9}$/.test(cleaned)) return '+91' + cleaned;
+    if (/^0[6-9]\d{9}$/.test(cleaned)) return '+91' + cleaned.slice(1);
+    if (/^91[6-9]\d{9}$/.test(cleaned)) return '+' + cleaned;
+    if (/^\d{10,15}$/.test(cleaned)) return '+' + cleaned;
+    return '+' + cleaned;
+  }
+
+  // Helper: Map Supabase errors to clear, user-friendly messages
+  function dk_mapAuthError(err) {
+    if (!err) return 'An error occurred during authentication.';
+    const msg = err.message || String(err);
+    if (/rate_limit|rate limit|too many/i.test(msg)) {
+      return 'Too many OTP requests. Please wait a moment before trying again.';
+    }
+    if (/Signups not allowed/i.test(msg)) {
+      return 'New user signups are disabled in Supabase Auth settings.';
+    }
+    if (/provider.*not configured|provider.*disabled|unsupported.*provider|sms provider/i.test(msg)) {
+      return 'SMS Provider is not configured in Supabase Dashboard. Enable Twilio/MessageBird under Authentication → Providers → Phone.';
+    }
+    if (/fetch|network|timeout|failed to fetch|ENOTFOUND|getaddrinfo/i.test(msg)) {
+      return 'Network error: Cannot reach Supabase server. Please check internet connection or verify that your Supabase project is active and unpaused.';
+    }
+    if (/invalid.*(phone|mobile)/i.test(msg)) {
+      return 'Invalid mobile number format. Please check the country code and number.';
+    }
+    return msg;
+  }
+
   // ── LOGIN: Step 1 — Send OTP ─────────────────────────────────────
   async function dk_loginSendOtp(isResend = false) {
+    // Explicitly coerce to boolean so click Event objects are never treated as true
+    isResend = (isResend === true);
+
+    if (_isSendingLoginOtp) return;
+
     const rawMobile = (document.getElementById('loginMobile')?.value || '').trim();
     dk_setAuthError('loginMobileError', '');
     dk_setAuthError('loginOtpError', '');
 
     const mobile = dk_formatMobileNumber(rawMobile);
     if (!/^\+[1-9]\d{9,14}$/.test(mobile)) {
-      dk_setAuthError('loginMobileError', 'Enter a valid mobile number with country code (e.g. +91 9876543210 or 10 digits).');
+      dk_setAuthError('loginMobileError', 'Enter a valid mobile number (e.g. 9876543210 or +91 9876543210).');
       return;
     }
 
     const btn = document.getElementById(isResend ? 'btnLoginResendOtp' : 'btnLoginSendOtp');
-    const origText = btn ? btn.textContent : 'Send OTP';
+    const origText = btn ? (isResend ? 'Resend Code' : 'Send OTP') : 'Send OTP';
+
+    _isSendingLoginOtp = true;
     if (btn) {
       btn.disabled = true;
       btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending OTP...';
     }
 
-    const devOtp = dk_generateOtp();
-    _dkOtpStore = { code: devOtp, mobile, userId: mobile, expiry: Date.now() + 120000, context: 'login' };
-
-    // Invoke Supabase Auth Phone OTP with network timeout & graceful fallback to fix "failed to fetch"
-    const sb = window.supabaseClient || window._supabaseClient;
-    if (sb && sb.auth && typeof sb.auth.signInWithOtp === 'function') {
-      try {
-        const otpPromise = sb.auth.signInWithOtp({
-          phone: mobile,
-          options: { channel: 'sms' }
-        });
-        // Increased timeout to 8s for slow connections — still falls back to dev OTP on failure
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('Connection timeout to Supabase')), 8000)
-        );
-        const { data, error } = await Promise.race([otpPromise, timeoutPromise]);
-
-        if (error) {
-          console.warn('[Supabase Auth Phone OTP]:', error.message);
-          // If error is network, fetch failed, SMS provider pending, or unconfigured
-          if (/fetch|network|timeout|provider|sms|not configured|disabled|unsupported|Signups not allowed/i.test(error.message)) {
-            showToast(`📱 Verification Code: ${devOtp}`, 10000);
-          } else {
-            dk_setAuthError('loginMobileError', error.message);
-            if (btn) { btn.disabled = false; btn.textContent = origText; }
-            return;
-          }
-        } else {
-          showToast(`✓ SMS OTP code sent to ${mobile}`);
-        }
-      } catch (err) {
-        console.warn('[Supabase Auth Connection Notice]:', err.message);
-        // Fix for "OTP failed to fetch": provide the verification code so user can log in without interruption
-        showToast(`📱 Verification Code: ${devOtp}`, 10000);
+    try {
+      const sb = window.supabaseClient || window._supabaseClient;
+      if (!sb || !sb.auth || typeof sb.auth.signInWithOtp !== 'function') {
+        throw new Error('Authentication client is not initialized.');
       }
-    } else {
-      showToast(`📱 Verification Code: ${devOtp}`, 10000);
+
+      const otpPromise = sb.auth.signInWithOtp({
+        phone: mobile,
+        options: {
+          channel: 'sms',
+          shouldCreateUser: true
+        }
+      });
+
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Connection timeout to Supabase server')), 8000)
+      );
+
+      const { data, error } = await Promise.race([otpPromise, timeoutPromise]);
+
+      if (error) {
+        console.error('[Supabase Phone OTP Error]:', error);
+        dk_setAuthError('loginMobileError', dk_mapAuthError(error));
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = origText;
+        }
+        return;
+      }
+
+      // Success
+      _dkOtpStore = { mobile, expiry: Date.now() + 120000, context: 'login' };
+      showToast(`✓ Verification code sent to ${mobile}`);
+
+      // Switch view to OTP input
+      const displayEl = document.getElementById('loginMobileDisplay');
+      if (displayEl) displayEl.textContent = mobile;
+
+      const stepMobile = document.getElementById('loginStepMobile');
+      const stepOtp = document.getElementById('loginStepOtp');
+      if (stepMobile) stepMobile.style.display = 'none';
+      if (stepOtp) stepOtp.style.display = 'block';
+
+      dk_clearOtpBoxes('loginOtpInputs');
+      dk_startOtpTimer('loginOtpTimer', 'btnLoginResendOtp', 60);
+
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = isResend ? 'Resend Code' : 'Send OTP';
+      }
+
+      setTimeout(() => {
+        document.querySelector('#loginOtpInputs .dk-otp-box')?.focus();
+      }, 150);
+
+    } catch (err) {
+      console.error('[Login Send OTP Exception]:', err);
+      dk_setAuthError('loginMobileError', dk_mapAuthError(err));
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+    } finally {
+      _isSendingLoginOtp = false;
     }
-
-    // Switch view to OTP input
-    const displayEl = document.getElementById('loginMobileDisplay');
-    if (displayEl) displayEl.textContent = mobile;
-
-    const stepMobile = document.getElementById('loginStepMobile');
-    const stepOtp = document.getElementById('loginStepOtp');
-    if (stepMobile) stepMobile.style.display = 'none';
-    if (stepOtp) stepOtp.style.display = 'block';
-
-    dk_clearOtpBoxes('loginOtpInputs');
-    dk_startOtpTimer('loginOtpTimer', 'btnLoginResendOtp', 60);
-
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = isResend ? 'Resend Code' : 'Send OTP';
-    }
-
-    setTimeout(() => {
-      document.querySelector('#loginOtpInputs .dk-otp-box')?.focus();
-    }, 150);
   }
 
   // ── LOGIN: Step 2 — Verify OTP ───────────────────────────────────
   async function dk_loginVerifyOtp() {
+    if (_isVerifyingLoginOtp) return;
+
     const entered = dk_getOtpValue('loginOtpInputs');
     dk_setAuthError('loginOtpError', '');
     if (entered.length < 6) {
@@ -3851,187 +3907,208 @@ async function fetchAndMergePlaylists() {
     }
 
     const btn = document.getElementById('btnLoginVerifyOtp');
+    const origText = 'Verify OTP';
+    _isVerifyingLoginOtp = true;
     if (btn) {
       btn.disabled = true;
       btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
     }
 
     const mobile = _dkOtpStore.mobile;
-    let isVerified = false;
 
-    // 1. Expiry check
-    if (Date.now() > _dkOtpStore.expiry && _dkOtpStore.code) {
-      dk_setAuthError('loginOtpError', 'Verification code has expired. Please click Resend Code.');
-      if (btn) { btn.disabled = false; btn.textContent = 'Verify OTP'; }
-      return;
-    }
-
-    // 2. Try Supabase Auth verifyOtp
-    const sb = window.supabaseClient || window._supabaseClient;
-    if (sb && sb.auth && typeof sb.auth.verifyOtp === 'function') {
-      try {
-        const { data, error } = await sb.auth.verifyOtp({
-          phone: mobile,
-          token: entered,
-          type: 'sms'
-        });
-        if (!error && (data?.session || data?.user)) {
-          isVerified = true;
-        } else if (error) {
-          console.warn('[Supabase Auth Verify]:', error.message);
-        }
-      } catch (e) {
-        console.warn('[Supabase Auth Verify Exception]:', e);
-      }
-    }
-
-    // 3. Fallback dev code check
-    if (!isVerified && _dkOtpStore.code && entered === _dkOtpStore.code) {
-      isVerified = true;
-    }
-
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = 'Verify OTP';
-    }
-
-    if (!isVerified) {
-      dk_setAuthError('loginOtpError', 'Invalid verification code. Please check and try again.');
-      return;
-    }
-
-    clearInterval(_dkOtpTimerInterval);
-
-    // Create authenticated user
-    const userObj = {
-      id: 'usr_' + mobile.replace(/\D/g, '').slice(-10),
-      userId: mobile,
-      name: 'User ' + mobile.slice(-4),
-      mobile: mobile,
-      role: 'user',
-      status: 'active'
-    };
-
-    // Save user to database if Supabase is connected
     try {
-      if (sb) {
-        await sb.from('users').upsert([{
-          user_id: userObj.userId,
-          name: userObj.name,
-          mobile: userObj.mobile,
-          role: 'user',
-          status: 'active'
-        }], { onConflict: 'user_id' });
+      const sb = window.supabaseClient || window._supabaseClient;
+      if (!sb || !sb.auth || typeof sb.auth.verifyOtp !== 'function') {
+        throw new Error('Authentication client is not initialized.');
       }
-    } catch (_) {}
 
-    await dk_completeLogin(userObj, false);
-  }
+      const verifyPromise = sb.auth.verifyOtp({
+        phone: mobile,
+        token: entered,
+        type: 'sms'
+      });
 
-  // ── Helper: Format Mobile Number to International E.164 (+91 for India) ──
-  function dk_formatMobileNumber(raw) {
-    let cleaned = (raw || '').replace(/[\s\-\(\)]/g, '');
-    if (cleaned.startsWith('00')) cleaned = '+' + cleaned.slice(2);
-    if (!cleaned.startsWith('+')) {
-      if (cleaned.startsWith('0') && cleaned.length === 11) {
-        cleaned = '+91' + cleaned.slice(1);
-      } else if (cleaned.length === 10 && /^[6-9]/.test(cleaned)) {
-        cleaned = '+91' + cleaned;
-      } else if (cleaned.length === 12 && cleaned.startsWith('91')) {
-        cleaned = '+' + cleaned;
-      } else {
-        cleaned = '+' + cleaned;
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Connection timeout to Supabase server')), 8000)
+      );
+
+      const { data, error } = await Promise.race([verifyPromise, timeoutPromise]);
+
+      if (error) {
+        console.error('[Supabase Auth Verify Error]:', error);
+        let msg = 'Invalid verification code. Please check and try again.';
+        if (/expired/i.test(error.message)) {
+          msg = 'Verification code has expired. Please click Resend Code.';
+        } else if (/fetch|network/i.test(error.message)) {
+          msg = 'Network error: Cannot reach authentication server.';
+        }
+        dk_setAuthError('loginOtpError', msg);
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = origText;
+        }
+        return;
       }
+
+      if (!data?.session && !data?.user) {
+        dk_setAuthError('loginOtpError', 'Verification failed. Please try again.');
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = origText;
+        }
+        return;
+      }
+
+      // Verification successful
+      clearInterval(_dkOtpTimerInterval);
+
+      // Create/resolve authenticated user object (handles both existing and new users)
+      const userObj = {
+        id: data.user?.id || ('usr_' + mobile.replace(/\D/g, '').slice(-10)),
+        userId: mobile,
+        name: data.user?.user_metadata?.name || ('User ' + mobile.slice(-4)),
+        mobile: mobile,
+        role: 'user',
+        status: 'active'
+      };
+
+      // Persist user record in users table if available
+      try {
+        if (sb) {
+          await sb.from('users').upsert([{
+            user_id: userObj.userId,
+            name: userObj.name,
+            mobile: userObj.mobile,
+            role: 'user',
+            status: 'active'
+          }], { onConflict: 'user_id' });
+        }
+      } catch (_) {}
+
+      await dk_completeLogin(userObj, false);
+
+    } catch (err) {
+      console.error('[Login Verify OTP Exception]:', err);
+      dk_setAuthError('loginOtpError', dk_mapAuthError(err));
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+    } finally {
+      _isVerifyingLoginOtp = false;
     }
-    return cleaned;
   }
 
   // ── SIGNUP: Step 1 — Send OTP ─────────────────────────────────────
   async function dk_signupSendOtp(isResend = false) {
+    // Explicitly coerce to boolean so click Event objects are never treated as true
+    isResend = (isResend === true);
+
+    if (_isSendingSignupOtp) return;
+
     const rawMobile = (document.getElementById('signupMobile')?.value || '').trim();
     dk_setAuthError('signup1Error', '');
     dk_setAuthError('signup2Error', '');
 
     const mobile = dk_formatMobileNumber(rawMobile);
     if (!/^\+[1-9]\d{9,14}$/.test(mobile)) {
-      dk_setAuthError('signup1Error', 'Enter a valid mobile number with country code (e.g. +91 9876543210).');
+      dk_setAuthError('signup1Error', 'Enter a valid mobile number (e.g. 9876543210 or +91 9876543210).');
       return;
     }
 
     const btn = document.getElementById(isResend ? 'btnSignupResendOtp' : 'btnSignupSendOtp');
-    const origText = btn ? btn.textContent : 'Send OTP Code';
+    const origText = btn ? (isResend ? 'Resend Code' : 'Send OTP Code') : 'Send OTP Code';
+
+    _isSendingSignupOtp = true;
     if (btn) {
       btn.disabled = true;
       btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending OTP...';
     }
 
-    // Check if not already registered
     try {
       const sb = window.supabaseClient || window._supabaseClient;
+
+      // Check if mobile number is already registered (with 2.5s timeout so it doesn't hang UI)
       if (sb) {
-        const { data } = await sb.from('users').select('user_id').eq('mobile', mobile).maybeSingle();
-        if (data) {
-          dk_setAuthError('signup1Error', 'This mobile number is already registered. Please log in.');
-          if (btn) { btn.disabled = false; btn.textContent = origText; }
-          return;
-        }
-      }
-    } catch (_) {}
-
-    const fallbackOtp = dk_generateOtp();
-    _dkOtpStore = { code: fallbackOtp, mobile, userId: '', expiry: Date.now() + 120000, context: 'signup' };
-
-    // Invoke Supabase Auth Phone OTP
-    const sb = window.supabaseClient || window._supabaseClient;
-    if (sb && sb.auth && typeof sb.auth.signInWithOtp === 'function') {
-      try {
-        const { data, error } = await sb.auth.signInWithOtp({
-          phone: mobile,
-          options: {
-            channel: 'sms'
-          }
-        });
-
-        if (error) {
-          console.warn('[Supabase Auth Phone OTP]:', error.message);
-          // Check if SMS provider is not configured or rate limited in Supabase Dashboard
-          if (/provider|sms|not configured|disabled|unsupported|Signups not allowed/i.test(error.message)) {
-            showToast(`📱 SMS Provider setup pending in Supabase Dashboard. Dev OTP: ${fallbackOtp}`, 8000);
-          } else {
-            dk_setAuthError(isResend ? 'signup2Error' : 'signup1Error', error.message);
-            if (btn) { btn.disabled = false; btn.textContent = origText; }
+        try {
+          const checkPromise = sb.from('users').select('user_id').eq('mobile', mobile).maybeSingle();
+          const timeoutCheck = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500));
+          const res = await Promise.race([checkPromise, timeoutCheck]);
+          if (res && res.data) {
+            dk_setAuthError(isResend ? 'signup2Error' : 'signup1Error', 'This mobile number is already registered. Please log in.');
+            if (btn) {
+              btn.disabled = false;
+              btn.textContent = origText;
+            }
             return;
           }
-        } else {
-          showToast(`✓ SMS OTP code sent to ${mobile}`);
-        }
-      } catch (err) {
-        console.warn('[Supabase Auth Error]:', err);
-        showToast(`📱 Dev OTP: ${fallbackOtp}`, 8000);
+        } catch (_) {}
       }
-    } else {
-      showToast(`📱 Dev OTP: ${fallbackOtp}`, 8000);
+
+      if (!sb || !sb.auth || typeof sb.auth.signInWithOtp !== 'function') {
+        throw new Error('Authentication client is not initialized.');
+      }
+
+      const otpPromise = sb.auth.signInWithOtp({
+        phone: mobile,
+        options: {
+          channel: 'sms',
+          shouldCreateUser: true
+        }
+      });
+
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Connection timeout to Supabase server')), 8000)
+      );
+
+      const { data, error } = await Promise.race([otpPromise, timeoutPromise]);
+
+      if (error) {
+        console.error('[Supabase Signup OTP Error]:', error);
+        dk_setAuthError(isResend ? 'signup2Error' : 'signup1Error', dk_mapAuthError(error));
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = origText;
+        }
+        return;
+      }
+
+      // Success
+      _dkOtpStore = { mobile, expiry: Date.now() + 120000, context: 'signup' };
+      showToast(`✓ Verification code sent to ${mobile}`);
+
+      const displayEl = document.getElementById('signupMobileDisplay');
+      if (displayEl) displayEl.textContent = mobile;
+
+      dk_clearOtpBoxes('otpInputs');
+      dk_setAllAuthViews('authViewSignup2');
+      dk_startOtpTimer('signupOtpTimer', 'btnSignupResendOtp', 60);
+
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = isResend ? 'Resend Code' : 'Send OTP Code';
+      }
+
+      setTimeout(() => {
+        document.querySelector('#otpInputs .dk-otp-box')?.focus();
+      }, 150);
+
+    } catch (err) {
+      console.error('[Signup Send OTP Exception]:', err);
+      dk_setAuthError(isResend ? 'signup2Error' : 'signup1Error', dk_mapAuthError(err));
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+    } finally {
+      _isSendingSignupOtp = false;
     }
-
-    const displayEl = document.getElementById('signupMobileDisplay');
-    if (displayEl) displayEl.textContent = mobile;
-
-    dk_clearOtpBoxes('otpInputs');
-    dk_setAllAuthViews('authViewSignup2');
-    dk_startOtpTimer('signupOtpTimer', 'btnSignupResendOtp', 60);
-
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = isResend ? 'Resend Code' : 'Send OTP Code';
-    }
-
-    setTimeout(() => {
-      document.querySelector('#otpInputs .dk-otp-box')?.focus();
-    }, 150);
   }
 
   // ── SIGNUP: Step 2 — Verify OTP ───────────────────────────────────
   async function dk_signupVerifyOtp() {
+    if (_isVerifyingSignupOtp) return;
+
     const entered = dk_getOtpValue('otpInputs');
     dk_setAuthError('signup2Error', '');
     if (entered.length < 6) {
@@ -4040,53 +4117,77 @@ async function fetchAndMergePlaylists() {
     }
 
     const btn = document.getElementById('btnSignupVerifyOtp');
+    const origText = 'Verify Code';
+    _isVerifyingSignupOtp = true;
     if (btn) {
       btn.disabled = true;
       btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
     }
 
     const mobile = _dkOtpStore.mobile;
-    let isVerified = false;
 
-    // 1. Try Supabase Auth verifyOtp
-    const sb = window.supabaseClient || window._supabaseClient;
-    if (sb && sb.auth && typeof sb.auth.verifyOtp === 'function') {
-      try {
-        const { data, error } = await sb.auth.verifyOtp({
-          phone: mobile,
-          token: entered,
-          type: 'sms'
-        });
-        if (!error && (data?.session || data?.user)) {
-          isVerified = true;
-        } else if (error) {
-          console.warn('[Supabase Auth Verify]:', error.message);
+    try {
+      const sb = window.supabaseClient || window._supabaseClient;
+      if (!sb || !sb.auth || typeof sb.auth.verifyOtp !== 'function') {
+        throw new Error('Authentication client is not initialized.');
+      }
+
+      const verifyPromise = sb.auth.verifyOtp({
+        phone: mobile,
+        token: entered,
+        type: 'sms'
+      });
+
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Connection timeout to Supabase server')), 8000)
+      );
+
+      const { data, error } = await Promise.race([verifyPromise, timeoutPromise]);
+
+      if (error) {
+        console.error('[Supabase Signup Verify Error]:', error);
+        let msg = 'Incorrect verification code. Please check and try again.';
+        if (/expired/i.test(error.message)) {
+          msg = 'Verification code has expired. Please click Resend Code.';
+        } else if (/fetch|network/i.test(error.message)) {
+          msg = 'Network error: Cannot reach authentication server.';
         }
-      } catch (e) {
-        console.warn('[Supabase Auth Verify Exception]:', e);
+        dk_setAuthError('signup2Error', msg);
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = origText;
+        }
+        return;
       }
-    }
 
-    // 2. Dev code fallback check
-    if (!isVerified && _dkOtpStore.code && entered === _dkOtpStore.code) {
-      if (Date.now() <= _dkOtpStore.expiry) {
-        isVerified = true;
+      if (!data?.session && !data?.user) {
+        dk_setAuthError('signup2Error', 'Verification failed. Please try again.');
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = origText;
+        }
+        return;
       }
-    }
 
-    if (btn) {
-      btn.disabled = false;
-      btn.textContent = 'Verify Code';
-    }
+      // Code is verified: proceed to Step 3 (Set User ID & Password)
+      clearInterval(_dkOtpTimerInterval);
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+      dk_setAllAuthViews('authViewSignup3');
+      document.getElementById('signupUserId')?.focus();
 
-    if (!isVerified) {
-      dk_setAuthError('signup2Error', 'Incorrect or expired code. Please try again or click Resend.');
-      return;
+    } catch (err) {
+      console.error('[Signup Verify OTP Exception]:', err);
+      dk_setAuthError('signup2Error', dk_mapAuthError(err));
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+    } finally {
+      _isVerifyingSignupOtp = false;
     }
-
-    clearInterval(_dkOtpTimerInterval);
-    dk_setAllAuthViews('authViewSignup3');
-    document.getElementById('signupUserId')?.focus();
   }
 
   // ── SIGNUP: Step 3 — Create Account ──────────────────────────────
@@ -4350,10 +4451,10 @@ async function fetchAndMergePlaylists() {
   document.getElementById('loginPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doLogin(); });
 
   // Signup
-  document.getElementById('btnSignupSendOtp')?.addEventListener('click', dk_signupSendOtp);
-  document.getElementById('signupMobile')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_signupSendOtp(); });
+  document.getElementById('btnSignupSendOtp')?.addEventListener('click', () => dk_signupSendOtp(false));
+  document.getElementById('signupMobile')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_signupSendOtp(false); });
   document.getElementById('btnSignupVerifyOtp')?.addEventListener('click', dk_signupVerifyOtp);
-  document.getElementById('btnSignupResendOtp')?.addEventListener('click', () => { dk_clearOtpBoxes('otpInputs'); dk_signupSendOtp(); });
+  document.getElementById('btnSignupResendOtp')?.addEventListener('click', () => { dk_clearOtpBoxes('otpInputs'); dk_signupSendOtp(true); });
   document.getElementById('btnSignupCreate')?.addEventListener('click', dk_signupCreate);
 
   // Forgot PW
