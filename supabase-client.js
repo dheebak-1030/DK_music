@@ -56,7 +56,15 @@
    * Load environment configuration from available sources (.env, server API, process.env)
    */
   function resolveConfig() {
-    // 1. Check Node.js / bundler process.env if present
+    // 1. Check global variables first (from config.js or window.SUPABASE_URL)
+    if (global.SUPABASE_URL && (global.SUPABASE_ANON_KEY || global.SUPABASE_PUBLISHABLE_KEY)) {
+      return {
+        supabaseUrl: global.SUPABASE_URL.trim(),
+        supabaseAnonKey: (global.SUPABASE_ANON_KEY || global.SUPABASE_PUBLISHABLE_KEY).trim()
+      };
+    }
+
+    // 2. Check Node.js / bundler process.env if present
     if (typeof process !== 'undefined' && process.env) {
       const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
       const key = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_PUBLISHABLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
@@ -65,7 +73,7 @@
       }
     }
 
-    // 2. Check window.__ENV__ or window.ENV if pre-injected
+    // 3. Check window.__ENV__ or window.ENV if pre-injected
     const injected = global.__ENV__ || global.ENV || {};
     if (injected.SUPABASE_URL && (injected.SUPABASE_ANON_KEY || injected.SUPABASE_PUBLISHABLE_KEY)) {
       return {
@@ -74,9 +82,22 @@
       };
     }
 
-    // 3. In browser environment: try loading from server or local .env synchronously
+    // 4. In browser environment: try loading from server API or local .env synchronously
     if (typeof XMLHttpRequest !== 'undefined') {
-      // 3. Try fetching local .env file (if running via static server / Live Server)
+      // 4a. Check server config endpoint if available
+      try {
+        const xhrApi = new XMLHttpRequest();
+        xhrApi.open('GET', '/api/supabase-config', false);
+        xhrApi.send(null);
+        if (xhrApi.status === 200 && xhrApi.responseText) {
+          const cfg = JSON.parse(xhrApi.responseText);
+          if (cfg.supabaseUrl && cfg.supabaseAnonKey) {
+            return { supabaseUrl: cfg.supabaseUrl.trim(), supabaseAnonKey: cfg.supabaseAnonKey.trim() };
+          }
+        }
+      } catch (_) {}
+
+      // 4b. Try fetching local .env file
       const envPaths = ['.env', 'data/.env', '/.env', '/data/.env'];
       for (const path of envPaths) {
         try {
@@ -95,7 +116,7 @@
       }
     }
 
-    // 4. Fallback defaults
+    // 5. Fallback defaults
     return {
       supabaseUrl: 'https://brufxavwnnzcpchtfiqg.supabase.co',
       supabaseAnonKey: 'sb_publishable_qq1F4EnE3h6f9o_V5WxpTw_RJAZrsJb'

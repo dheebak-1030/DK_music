@@ -1008,11 +1008,10 @@
                 </h3>
                 <button class="btn-icon-sm" id="btnCloseAuthModal" style="background:transparent; border:none; color:#8e95a5; cursor:pointer;"><i class="fas fa-xmark"></i></button>
             </div>
-            <!-- Tabs -->
+            <!-- Tabs (Spotify-style Login | Sign Up Toggle) -->
             <div class="auth-tabs" style="display:flex; border-bottom:1px solid #1f2833; background:#0b0c10;">
-                <button class="auth-tab-btn active" id="tabAuthLogin" style="flex:1; padding:12px; background:transparent; border:none; color:#45f3ff; font-weight:700; cursor:pointer; border-bottom:2px solid #45f3ff; font-size:0.85rem;">Log In</button>
-                <button class="auth-tab-btn" id="tabAuthRegister" style="flex:1; padding:12px; background:transparent; border:none; color:#8e95a5; font-weight:600; cursor:pointer; font-size:0.85rem;">New User</button>
-                <button class="auth-tab-btn" id="tabAuthForgot" style="flex:1; padding:12px; background:transparent; border:none; color:#8e95a5; font-weight:600; cursor:pointer; font-size:0.85rem;">Forgot PW</button>
+                <button class="auth-tab-btn active" id="tabAuthLogin" style="flex:1; padding:12px; background:transparent; border:none; color:#45f3ff; font-weight:700; cursor:pointer; border-bottom:2px solid #45f3ff; font-size:0.9rem;">Login</button>
+                <button class="auth-tab-btn" id="tabAuthRegister" style="flex:1; padding:12px; background:transparent; border:none; color:#8e95a5; font-weight:600; cursor:pointer; font-size:0.9rem;">Sign Up</button>
             </div>
 
             <!-- ======= LOGIN VIEW (MOBILE OTP PRIMARY) ======= -->
@@ -1072,6 +1071,7 @@
                     </div>
                     <div id="loginError" style="color:#ff4d4d; font-size:13px; margin-bottom:12px; text-align:center; font-weight:600; display:none;"></div>
                     <button class="btn-primary" id="btnLoginSubmit" style="width:100%; padding:10px; border-radius:8px; font-weight:700;">Log In with Password</button>
+                    <button type="button" id="btnForgotPwLink" style="background:none; border:none; color:#8e95a5; font-size:11px; cursor:pointer; text-decoration:underline; display:block; margin:8px auto 0 auto;">Forgot Password?</button>
                 </div>
 
                 <div style="margin-top:16px; border-top:1px solid #1f2833; padding-top:14px; text-align:center;">
@@ -1083,13 +1083,15 @@
 
             <!-- ======= SIGNUP VIEW — Step 1: Mobile ======= -->
             <div id="authViewSignup1" style="padding:24px; display:none;">
-                <p style="color:#8e95a5; font-size:0.85rem; margin:0 0 16px 0;">Enter your mobile number. We'll send a verification code.</p>
+                <p style="color:#8e95a5; font-size:0.85rem; margin:0 0 16px 0;">Enter your mobile number to create your DK Music account.</p>
                 <div style="margin-bottom:14px;">
                     <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">Mobile Number *</label>
-                    <input type="tel" id="signupMobile" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 14px; box-sizing:border-box;" placeholder="+91 9876543210" maxlength="15">
+                    <input type="tel" id="signupMobile" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 14px; box-sizing:border-box;" placeholder="+91 9876543210" maxlength="15" autocomplete="tel">
                 </div>
                 <div id="signup1Error" style="color:#ff4d4d; font-size:13px; margin-bottom:12px; text-align:center; font-weight:600; display:none;"></div>
-                <button class="btn-primary" id="btnSignupSendOtp" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">Send OTP Code</button>
+                <button class="btn-primary" id="btnSignupSendOtp" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">
+                    <i class="fas fa-paper-plane" style="margin-right:6px;"></i> Send OTP
+                </button>
             </div>
 
             <!-- ======= SIGNUP VIEW — Step 2: OTP ======= -->
@@ -1105,8 +1107,13 @@
                     <input type="text" class="dk-otp-box" maxlength="1" inputmode="numeric" pattern="[0-9]*">
                 </div>
                 <div id="signup2Error" style="color:#ff4d4d; font-size:13px; margin-bottom:12px; text-align:center; font-weight:600; display:none;"></div>
-                <button class="btn-primary" id="btnSignupVerifyOtp" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">Verify Code</button>
-                <button class="btn-outline" id="btnSignupResendOtp" style="width:100%; padding:10px; border-radius:8px; font-weight:600; margin-top:8px; font-size:0.85rem;" disabled>Resend Code</button>
+                <button class="btn-primary" id="btnSignupVerifyOtp" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">
+                    <i class="fas fa-shield-check" style="margin-right:6px;"></i> Verify OTP
+                </button>
+                <div style="display:flex; gap:8px; margin-top:10px;">
+                    <button class="btn-outline" id="btnSignupResendOtp" style="flex:1; padding:9px; border-radius:8px; font-weight:600; font-size:0.85rem;" disabled>Resend Code</button>
+                    <button class="btn-outline" id="btnSignupChangeMobile" style="flex:1; padding:9px; border-radius:8px; font-weight:600; font-size:0.85rem;">Change Number</button>
+                </div>
             </div>
 
             <!-- ======= SIGNUP VIEW — Step 3: Create Account ======= -->
@@ -1221,6 +1228,7 @@
             document.write('<script src="https://unpkg.com/@supabase/supabase-js@2"><\/script>');
         }
     </script>
+    <script src="config.js"></script>
     <script src="supabase-client.js"></script>
     <script src="music-data.js"></script>
     <script src="offline-db.js"></script>

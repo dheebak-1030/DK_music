@@ -3482,23 +3482,33 @@ async function fetchAndMergePlaylists() {
     });
   }
 
-  // ── Tab switching ─────────────────────────────────────────────────
+  // ── Tab switching (Spotify-style Login | Sign Up Toggle) ───────────
   function dk_switchAuthTab(tab) {
-    ['tabAuthLogin','tabAuthRegister','tabAuthForgot'].forEach(id => {
-      const btn = document.getElementById(id);
-      if (!btn) return;
-      const active = (id === tab);
-      btn.style.color = active ? '#45f3ff' : '#8e95a5';
-      btn.style.borderBottom = active ? '2px solid #45f3ff' : 'none';
-    });
+    const isLogin = (tab === 'tabAuthLogin');
+    const isSignup = (tab === 'tabAuthRegister');
+    const isForgot = (tab === 'tabAuthForgot');
+
+    const tabLogin = document.getElementById('tabAuthLogin');
+    const tabRegister = document.getElementById('tabAuthRegister');
+    if (tabLogin) {
+      tabLogin.style.color = isLogin ? '#45f3ff' : '#8e95a5';
+      tabLogin.style.borderBottom = isLogin ? '2px solid #45f3ff' : 'none';
+      tabLogin.classList.toggle('active', isLogin);
+    }
+    if (tabRegister) {
+      tabRegister.style.color = isSignup ? '#45f3ff' : '#8e95a5';
+      tabRegister.style.borderBottom = isSignup ? '2px solid #45f3ff' : 'none';
+      tabRegister.classList.toggle('active', isSignup);
+    }
+
     const authModalTitle = document.getElementById('authModalTitle');
-    if (tab === 'tabAuthLogin') {
-      if (authModalTitle) authModalTitle.innerHTML = '<i class="fas fa-user-lock" style="color:#45f3ff;"></i> User Login';
+    if (isLogin) {
+      if (authModalTitle) authModalTitle.innerHTML = '<i class="fas fa-user-lock" style="color:#45f3ff;"></i> Login';
       dk_setAllAuthViews('authViewLogin');
-    } else if (tab === 'tabAuthRegister') {
-      if (authModalTitle) authModalTitle.innerHTML = '<i class="fas fa-user-plus" style="color:#45f3ff;"></i> New Account';
+    } else if (isSignup) {
+      if (authModalTitle) authModalTitle.innerHTML = '<i class="fas fa-user-plus" style="color:#45f3ff;"></i> Sign Up';
       dk_setAllAuthViews('authViewSignup1');
-    } else {
+    } else if (isForgot) {
       if (authModalTitle) authModalTitle.innerHTML = '<i class="fas fa-key" style="color:#f59e0b;"></i> Forgot Password';
       dk_setAllAuthViews('authViewForgot1');
     }
@@ -4169,14 +4179,37 @@ async function fetchAndMergePlaylists() {
         return;
       }
 
-      // Code is verified: proceed to Step 3 (Set User ID & Password)
+      // Code is verified: Create and log in new user directly into DK Music
       clearInterval(_dkOtpTimerInterval);
       if (btn) {
         btn.disabled = false;
         btn.textContent = origText;
       }
-      dk_setAllAuthViews('authViewSignup3');
-      document.getElementById('signupUserId')?.focus();
+
+      const userObj = {
+        id: data.user?.id || ('usr_' + mobile.replace(/\D/g, '').slice(-10)),
+        userId: mobile,
+        name: data.user?.user_metadata?.name || ('User ' + mobile.slice(-4)),
+        mobile: mobile,
+        role: 'user',
+        status: 'active'
+      };
+
+      // Persist user record in users table / local storage
+      try {
+        if (sb) {
+          await sb.from('users').upsert([{
+            user_id: userObj.userId,
+            name: userObj.name,
+            mobile: userObj.mobile,
+            role: 'user',
+            status: 'active'
+          }], { onConflict: 'user_id' });
+        }
+      } catch (_) {}
+
+      // Complete login and enter DK Music application directly
+      await dk_completeLogin(userObj, false);
 
     } catch (err) {
       console.error('[Signup Verify OTP Exception]:', err);
@@ -4455,7 +4488,14 @@ async function fetchAndMergePlaylists() {
   document.getElementById('signupMobile')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_signupSendOtp(false); });
   document.getElementById('btnSignupVerifyOtp')?.addEventListener('click', dk_signupVerifyOtp);
   document.getElementById('btnSignupResendOtp')?.addEventListener('click', () => { dk_clearOtpBoxes('otpInputs'); dk_signupSendOtp(true); });
+  document.getElementById('btnSignupChangeMobile')?.addEventListener('click', () => {
+    clearInterval(_dkOtpTimerInterval);
+    dk_setAllAuthViews('authViewSignup1');
+    dk_setAuthError('signup1Error', '');
+    document.getElementById('signupMobile')?.focus();
+  });
   document.getElementById('btnSignupCreate')?.addEventListener('click', dk_signupCreate);
+  document.getElementById('btnForgotPwLink')?.addEventListener('click', () => dk_switchAuthTab('tabAuthForgot'));
 
   // Forgot PW
   document.getElementById('btnForgotSendOtp')?.addEventListener('click', dk_forgotSendOtp);
