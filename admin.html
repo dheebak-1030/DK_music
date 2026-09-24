@@ -392,6 +392,7 @@
             <button class="tab-btn active" data-tab="dashboard"><i class="fas fa-chart-pie"></i> Dashboard</button>
             <button class="tab-btn" data-tab="home-sections"><i class="fas fa-table-columns"></i> Home Sections</button>
             <button class="tab-btn" data-tab="users"><i class="fas fa-users"></i> Users</button>
+            <button class="tab-btn" data-tab="locations" id="tabBtnLocations"><i class="fas fa-location-dot"></i> User Locations</button>
             <button class="tab-btn" data-tab="playlists"><i class="fas fa-list-check"></i> Playlists</button>
             <button class="tab-btn" data-tab="songs"><i class="fas fa-compact-disc"></i> Songs Catalog</button>
             <button class="tab-btn" data-tab="settings"><i class="fas fa-gear"></i> App Settings</button>
@@ -693,6 +694,39 @@
                             </tr>
                         </thead>
                         <tbody id="userTableBody">
+                            <!-- JS Populated -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 1B: USER LOCATIONS MANAGEMENT -->
+        <div id="tab-locations" class="tab-content-panel">
+            <div class="admin-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
+                    <div>
+                        <h3 style="margin:0; color:#fff;"><i class="fas fa-location-dot" style="color:#45f3ff;"></i> Authorized User Locations</h3>
+                        <p style="margin:4px 0 0 0; color:#8e95a5; font-size:0.85rem;">Secure administrative view of user geographic coordinates, accuracy, and timestamp recorded with user consent.</p>
+                    </div>
+                    <button id="btnRefreshLocations" class="btn-primary" style="padding: 8px 16px; font-size:0.85rem;">
+                        <i class="fas fa-arrows-rotate"></i> Refresh Locations
+                    </button>
+                </div>
+
+                <div style="overflow-x:auto;">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>User ID / Account</th>
+                                <th>Latitude</th>
+                                <th>Longitude</th>
+                                <th>Accuracy</th>
+                                <th>Last Updated</th>
+                                <th>Map Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="userLocationsTableBody">
                             <!-- JS Populated -->
                         </tbody>
                     </table>

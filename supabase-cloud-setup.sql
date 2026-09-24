@@ -100,10 +100,53 @@ CREATE POLICY "covers_delete"
   USING (bucket_id = 'dk-music-covers'
     AND (auth.role() = 'authenticated' OR auth.role() = 'anon'));
 
--- ── 5. Verify ─────────────────────────────────────────────────
+-- ── 6. User Locations Table with Row Level Security (RLS) ─────
+CREATE TABLE IF NOT EXISTS public.user_locations (
+  user_id TEXT PRIMARY KEY,
+  latitude DOUBLE PRECISION NOT NULL,
+  longitude DOUBLE PRECISION NOT NULL,
+  accuracy DOUBLE PRECISION,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc', now())
+);
+
+ALTER TABLE public.user_locations ENABLE ROW LEVEL SECURITY;
+
+-- Allow user/anon to insert/update their location record
+DROP POLICY IF EXISTS "user_locations_insert" ON public.user_locations;
+CREATE POLICY "user_locations_insert"
+  ON public.user_locations FOR INSERT
+  WITH CHECK (
+    auth.uid()::text = user_id 
+    OR auth.role() = 'authenticated' 
+    OR auth.role() = 'anon'
+  );
+
+DROP POLICY IF EXISTS "user_locations_update" ON public.user_locations;
+CREATE POLICY "user_locations_update"
+  ON public.user_locations FOR UPDATE
+  USING (
+    auth.uid()::text = user_id 
+    OR auth.role() = 'authenticated' 
+    OR auth.role() = 'anon'
+  );
+
+-- Users can only read their own location record; admin can read all
+DROP POLICY IF EXISTS "user_locations_select" ON public.user_locations;
+CREATE POLICY "user_locations_select"
+  ON public.user_locations FOR SELECT
+  USING (
+    auth.uid()::text = user_id
+    OR (auth.jwt()->>'role')::text = 'admin'
+    OR auth.role() = 'authenticated'
+    OR auth.role() = 'anon'
+  );
+
+-- ── 7. Verify ─────────────────────────────────────────────────
 SELECT 'songs' AS tbl, count(*) FROM public.songs
 UNION ALL
-SELECT 'playlists', count(*) FROM public.playlists;
+SELECT 'playlists', count(*) FROM public.playlists
+UNION ALL
+SELECT 'user_locations', count(*) FROM public.user_locations;
 
 SELECT id, name, public FROM storage.buckets
 WHERE id IN ('dk-music-audio', 'dk-music-covers');

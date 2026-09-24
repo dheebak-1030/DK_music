@@ -163,6 +163,7 @@
   // Assign to globals
   global.__supabaseClientInstance = client;
   global.supabaseClient = client;
+  global._supabaseClient = client;
   global.getSupabaseClient = () => (client ? Promise.resolve(client) : clientPromise);
   global.isSupabaseConnected = () => !!client;
   global.supabaseConfig = {

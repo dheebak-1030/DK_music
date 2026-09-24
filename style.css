@@ -4969,3 +4969,11 @@ td {
 .ctrl-btn-big {
   position: relative;
 }
+
+/* ===== Authentication Gate State ===== */
+body:not(.authenticated) .app-layout {
+  visibility: hidden !important;
+}
+body.authenticated .app-layout {
+  visibility: visible !important;
+}

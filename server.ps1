@@ -10,6 +10,11 @@ if (-not (Test-Path $dataDir)) {
 $usersFile = Join-Path $dataDir "users.json"
 $playlistsFile = Join-Path $dataDir "playlists.json"
 $songsFile = Join-Path $dataDir "songs.json"
+$locationsFile = Join-Path $dataDir "locations.json"
+
+if (-not (Test-Path $locationsFile)) {
+    @() | ConvertTo-Json | Set-Content $locationsFile -Encoding UTF8
+}
 
 if (-not (Test-Path $usersFile)) {
     $defaultUsers = @(
@@ -271,10 +276,52 @@ try {
             continue
         }
 
+        # ── User Location Storage API ──
+        if ($requestUrl -eq "/api/user-locations" -and $httpMethod -eq "POST") {
+            $req = Get-RequestBody $context
+            if ($req -and $req.user_id) {
+                $locations = @()
+                if (Test-Path $locationsFile) {
+                    $raw = Get-Content $locationsFile -Raw -Encoding UTF8
+                    if ($raw) { $locations = $raw | ConvertFrom-Json }
+                }
+                $locList = [System.Collections.ArrayList]@()
+                if ($locations) {
+                    $locations | ForEach-Object {
+                        if ($_.user_id -ne $req.user_id) { [void]$locList.Add($_) }
+                    }
+                }
+                $newLoc = @{
+                    user_id = $req.user_id
+                    latitude = $req.latitude
+                    longitude = $req.longitude
+                    accuracy = $req.accuracy
+                    updated_at = if ($req.updated_at) { $req.updated_at } else { (Get-Date).ToString("o") }
+                }
+                [void]$locList.Add($newLoc)
+                $locList | ConvertTo-Json -Depth 5 | Set-Content $locationsFile -Encoding UTF8
+                Send-JsonResponse $context @{ success = $true; message = "Location saved." } 200
+                continue
+            }
+            Send-JsonResponse $context @{ success = $false; error = "Missing user_id." } 400
+            continue
+        }
+
         # ── 2. ADMIN REST APIS (PROTECTED) ──────────────────────
         if ($requestUrl.StartsWith("/api/admin/")) {
             if (-not (Check-IsAdminToken $context)) {
                 Send-JsonResponse $context @{ success = $false; error = "Unauthorized: Admin authorization required." } 401
+                continue
+            }
+
+            # --- Admin User Locations ---
+            if ($requestUrl -eq "/api/admin/user-locations" -and $httpMethod -eq "GET") {
+                $locations = @()
+                if (Test-Path $locationsFile) {
+                    $raw = Get-Content $locationsFile -Raw -Encoding UTF8
+                    if ($raw) { $locations = $raw | ConvertFrom-Json }
+                }
+                Send-JsonResponse $context @{ success = $true; locations = $locations } 200
                 continue
             }
 

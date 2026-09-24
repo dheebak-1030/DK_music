@@ -406,6 +406,7 @@ async function loadDashboardData() {
     try {
         await Promise.all([
             fetchUsers(),
+            fetchUserLocations(),
             fetchPlaylists(),
             fetchSongs()
         ]);
@@ -844,6 +845,99 @@ window.deleteUser = async function(userIdOrId) {
         showAdminToast('Failed to delete user: ' + err.message, true);
     }
 };
+
+// ── 1B. USER LOCATIONS MANAGEMENT ───────────────────────────
+let userLocationsData = [];
+const userLocationsTableBody = document.getElementById('userLocationsTableBody');
+
+async function fetchUserLocations() {
+    let locations = [];
+    const sb = window.supabaseClient || window._supabaseClient;
+    if (sb) {
+        try {
+            const { data, error } = await sb
+                .from('user_locations')
+                .select('*')
+                .order('updated_at', { ascending: false });
+            if (!error && Array.isArray(data) && data.length > 0) {
+                locations = data;
+            }
+        } catch (e) {
+            console.warn('[Admin] Supabase location fetch failed:', e);
+        }
+    }
+
+    // Fallback: check server REST API
+    if (!locations || locations.length === 0) {
+        try {
+            const res = await adminFetch('/api/admin/user-locations');
+            if (res && Array.isArray(res.locations) && res.locations.length > 0) {
+                locations = res.locations;
+            }
+        } catch (_) {}
+    }
+
+    // Fallback: check local storage
+    if (!locations || locations.length === 0) {
+        try {
+            const local = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
+            if (Array.isArray(local) && local.length > 0) {
+                locations = local;
+            }
+        } catch (_) {}
+    }
+
+    userLocationsData = locations;
+    renderUserLocationsTable(userLocationsData);
+}
+
+function renderUserLocationsTable(locations) {
+    if (!userLocationsTableBody) return;
+    userLocationsTableBody.innerHTML = '';
+
+    if (!locations || locations.length === 0) {
+        userLocationsTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 24px; color:#8e95a5;">No user location records found. Locations will appear here once users log in and grant geolocation access.</td></tr>';
+        return;
+    }
+
+    locations.forEach(loc => {
+        const tr = document.createElement('tr');
+        const lat = typeof loc.latitude === 'number' ? loc.latitude.toFixed(6) : (loc.latitude || '-');
+        const lng = typeof loc.longitude === 'number' ? loc.longitude.toFixed(6) : (loc.longitude || '-');
+        const acc = loc.accuracy ? `±${Math.round(loc.accuracy)}m` : 'N/A';
+        const updated = loc.updated_at ? new Date(loc.updated_at).toLocaleString() : '-';
+        const mapsUrl = (loc.latitude && loc.longitude) 
+            ? `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}` 
+            : '#';
+
+        tr.innerHTML = `
+            <td>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <i class="fas fa-user-circle" style="color:#45f3ff;"></i>
+                    <strong>${loc.user_id || loc.userId || 'Anonymous'}</strong>
+                </div>
+            </td>
+            <td><code style="background:#161924; padding:2px 6px; border-radius:4px; color:#45f3ff;">${lat}</code></td>
+            <td><code style="background:#161924; padding:2px 6px; border-radius:4px; color:#45f3ff;">${lng}</code></td>
+            <td><span class="badge-status badge-active" style="background:rgba(69,243,255,0.15); color:#45f3ff;">${acc}</span></td>
+            <td style="color:#8e95a5; font-size:0.85rem;">${updated}</td>
+            <td>
+                ${loc.latitude && loc.longitude ? `
+                    <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" class="btn-action-sm btn-edit" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px;">
+                        <i class="fas fa-map-location-dot"></i> View Map
+                    </a>
+                ` : '<span style="color:#64748b;">No Coords</span>'}
+            </td>
+        `;
+        userLocationsTableBody.appendChild(tr);
+    });
+}
+
+document.getElementById('btnRefreshLocations')?.addEventListener('click', async () => {
+    showAdminToast('Refreshing user locations...');
+    await fetchUserLocations();
+    showAdminToast('✓ User locations refreshed!');
+});
 
 // ── 2. PLAYLISTS MANAGEMENT ─────────────────────────────────
 
