@@ -186,60 +186,117 @@
     },
 
     /**
-     * Standard Login with Password (Email or Phone number)
+     * Helper to resolve any identifier (email, phone, username) to standard Supabase Auth email
+     */
+    resolveEmail: function (identifier) {
+      const clean = String(identifier || '').trim();
+      if (!clean) return '';
+      if (clean.includes('@')) return clean.toLowerCase();
+      if (clean.toLowerCase() === 'admin') return 'admin@dkmusic.com';
+      const safe = clean.replace(/[^\w]/g, '').toLowerCase();
+      return safe + '@dkmusic.app';
+    },
+
+    /**
+     * Standard Login with Password (Email, Mobile, or User ID)
+     * Issues real Supabase JWT session tokens without requiring SMS provider
      */
     loginWithPassword: async function (identifier, password) {
       const sb = global.supabaseClient || (await global.getSupabaseClient?.());
       if (!sb || !sb.auth) throw new Error('Supabase Auth client is not initialized.');
 
       const cleanId = String(identifier).trim();
-      const isEmail = cleanId.includes('@');
+      const resolvedEmail = DKAuth.resolveEmail(cleanId);
 
-      let credentials;
-      if (isEmail) {
-        credentials = { email: cleanId, password };
-      } else {
-        const formatted = formatE164Phone(cleanId);
-        credentials = { phone: formatted, password };
+      // 1. Try with resolved email
+      try {
+        const { data, error } = await sb.auth.signInWithPassword({
+          email: resolvedEmail,
+          password: password
+        });
+        if (!error && data?.session) {
+          await applyAuthState(data.session);
+          return data;
+        }
+        if (error && !error.message.includes('Invalid login credentials')) {
+          throw error;
+        }
+      } catch (err) {
+        if (!err.message || !err.message.includes('Invalid login credentials')) {
+          throw err;
+        }
       }
 
-      const { data, error } = await sb.auth.signInWithPassword(credentials);
-      if (error) throw error;
-      await applyAuthState(data.session);
-      return data;
+      // 2. If it was a phone number, try phone auth directly as fallback if enabled
+      if (!cleanId.includes('@')) {
+        try {
+          const formatted = formatE164Phone(cleanId);
+          const { data, error } = await sb.auth.signInWithPassword({ phone: formatted, password });
+          if (!error && data?.session) {
+            await applyAuthState(data.session);
+            return data;
+          }
+        } catch (_) {}
+      }
+
+      // 3. If direct email had capital letters or variations, try direct
+      if (cleanId.includes('@') && cleanId !== resolvedEmail) {
+        const { data, error } = await sb.auth.signInWithPassword({ email: cleanId, password });
+        if (!error && data?.session) {
+          await applyAuthState(data.session);
+          return data;
+        }
+      }
+
+      throw new Error('Invalid login credentials. Please check your email/mobile and password.');
     },
 
     /**
-     * Signup / Login with Phone OTP (SMS)
+     * Standard Sign Up with Password (Email, Mobile, or User ID)
+     * Creates real Supabase Auth account and issues JWT session without SMS provider
      */
-    signInWithOtp: async function (phone) {
+    signUpWithPassword: async function ({ identifier, password, displayName }) {
       const sb = global.supabaseClient || (await global.getSupabaseClient?.());
       if (!sb || !sb.auth) throw new Error('Supabase Auth client is not initialized.');
 
-      const formatted = formatE164Phone(phone);
-      const { data, error } = await sb.auth.signInWithOtp({
-        phone: formatted,
-        options: { channel: 'sms' }
-      });
-      if (error) throw error;
-      return data;
-    },
+      const cleanId = String(identifier).trim();
+      const resolvedEmail = DKAuth.resolveEmail(cleanId);
+      const name = displayName || (cleanId.includes('@') ? cleanId.split('@')[0] : cleanId);
 
-    /**
-     * Verify Phone OTP Token
-     */
-    verifyOtp: async function (phone, token) {
-      const sb = global.supabaseClient || (await global.getSupabaseClient?.());
-      if (!sb || !sb.auth) throw new Error('Supabase Auth client is not initialized.');
-
-      const formatted = formatE164Phone(phone);
-      const { data, error } = await sb.auth.verifyOtp({
-        phone: formatted,
-        token: String(token).trim(),
-        type: 'sms'
+      const { data, error } = await sb.auth.signUp({
+        email: resolvedEmail,
+        password: password,
+        options: {
+          data: {
+            display_name: name,
+            phone: cleanId.includes('@') ? '' : cleanId
+          }
+        }
       });
-      if (error) throw error;
-      await applyAuthState(data.session);
+
+      if (error) {
+        console.warn('[DKAuth] Signup notice:', error.message);
+        throw error;
+      }
+
+      // If session returned immediately (auto-confirm is default or enabled)
+      if (data?.session) {
+        await applyAuthState(data.session);
+        return data;
+      }
+
+      // If user created, try immediate sign in
+      try {
+        const signInRes = await sb.auth.signInWithPassword({
+          email: resolvedEmail,
+          password: password
+        });
+        if (signInRes.data?.session) {
+          await applyAuthState(signInRes.data.session);
+          return signInRes.data;
+        }
+      } catch (_) {}
+
       return data;
     },
 
