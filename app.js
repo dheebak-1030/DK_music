@@ -4156,6 +4156,44 @@ async function fetchAndMergePlaylists() {
     }
   }
 
+  // ── Forgot Password: Email Reset Link ─────────────────────────────
+  async function dk_forgotSendOtp() {
+    const input = document.getElementById('forgotIdentifier');
+    const email = (input?.value || '').trim();
+    dk_setAuthError('forgot1Error', '');
+    const succEl = document.getElementById('forgot1Success');
+    if (succEl) succEl.style.display = 'none';
+
+    if (!email) {
+      dk_setAuthError('forgot1Error', 'Please enter your registered email address.');
+      return;
+    }
+
+    const btn = document.getElementById('btnForgotSendOtp');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending link...'; }
+
+    try {
+      const sb = window.supabaseClient;
+      if (sb && sb.auth && typeof sb.auth.resetPasswordForEmail === 'function') {
+        const resolvedEmail = (window.DKAuth && typeof window.DKAuth.resolveEmail === 'function')
+          ? window.DKAuth.resolveEmail(email)
+          : email;
+        const { error } = await sb.auth.resetPasswordForEmail(resolvedEmail, {
+          redirectTo: window.location.origin + window.location.pathname
+        });
+        if (error) throw error;
+      }
+      if (succEl) {
+        succEl.textContent = '✓ Password reset link sent! Check your inbox.';
+        succEl.style.display = 'block';
+      }
+    } catch (err) {
+      dk_setAuthError('forgot1Error', err.message || 'Failed to send reset link.');
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane" style="margin-right:6px;"></i> Send Reset Link'; }
+    }
+  }
+
   // ── Logout ───────────────────────────────────────────────────────
   async function logoutUser() {
     if (window.DKAuth && typeof window.DKAuth.logout === 'function') {
@@ -4346,16 +4384,22 @@ async function fetchAndMergePlaylists() {
   }
 
   // ── Boot Application ────────────────────────────────────────
-  window.addEventListener('DOMContentLoaded', () => {
-    applyAdminAppSettings();
-    applyAdminHomeSectionsConfig();
-    updateNetworkStatus();
-    setup3D();
-    fetchSongs();
-    initAuthSystem();
-    initVoiceSearchEngine();
-    initAIAssistantSection();
-  });
+  function bootApplication() {
+    try { applyAdminAppSettings(); } catch (e) { console.warn(e); }
+    try { applyAdminHomeSectionsConfig(); } catch (e) { console.warn(e); }
+    try { updateNetworkStatus(); } catch (e) { console.warn(e); }
+    try { setup3D(); } catch (e) { console.warn(e); }
+    try { fetchSongs(); } catch (e) { console.warn(e); }
+    try { initAuthSystem(); } catch (e) { console.warn(e); }
+    try { initVoiceSearchEngine(); } catch (e) { console.warn(e); }
+    try { initAIAssistantSection(); } catch (e) { console.warn(e); }
+  }
+
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', bootApplication);
+  } else {
+    bootApplication();
+  }
 
   // Expose core variables and functions globally
   window.songs = songs;
