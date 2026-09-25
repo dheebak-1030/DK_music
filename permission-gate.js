@@ -1,9 +1,10 @@
 /**
- * DK Music — Location & Camera Permission Gate
- * 
- * Enforces Location + Camera access immediately following user authentication.
- * Captures user geolocation and camera photo snapshot, storing them securely in Supabase.
- * App access is unlocked ONLY when both permissions are granted.
+ * DK Music — Optional Location & Camera Permission Gate
+ *
+ * Presents an optional permission screen after authentication.
+ * Users can Skip at any time — the app always works without permissions.
+ * Never silently accesses location/camera in background.
+ * Never blocks app access if permissions are denied.
  */
 
 (function (global) {
@@ -34,7 +35,7 @@
         await sb.from('user_locations').upsert([locRecord], { onConflict: 'user_id' });
       }
     } catch (e) {
-      console.warn('[PermissionGate] Supabase location save notice:', e);
+      console.warn('[PermissionGate] Location save notice:', e);
     }
 
     try {
@@ -67,7 +68,7 @@
         await sb.from('user_snapshots').insert([snapshotRecord]);
       }
     } catch (e) {
-      console.warn('[PermissionGate] Supabase snapshot save notice:', e);
+      console.warn('[PermissionGate] Snapshot save notice:', e);
     }
 
     try {
@@ -79,7 +80,7 @@
   }
 
   /**
-   * Capture a snapshot frame from the user's camera
+   * Capture a snapshot from the user's camera (user-initiated only)
    */
   async function captureCameraPhoto() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -102,10 +103,9 @@
         video.onloadedmetadata = () => {
           video.play().then(resolve).catch(resolve);
         };
-        setTimeout(resolve, 1500); // timeout safeguard
+        setTimeout(resolve, 1500);
       });
 
-      // Allow 200ms for camera auto-exposure
       await new Promise(r => setTimeout(r, 200));
 
       const canvas = document.createElement('canvas');
@@ -114,16 +114,15 @@
       const ctx = canvas.getContext('2d');
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-      return dataUrl;
+      return canvas.toDataURL('image/jpeg', 0.8);
     } finally {
-      // Always stop camera stream immediately
+      // Always stop camera immediately after capture
       stream.getTracks().forEach(track => track.stop());
     }
   }
 
   /**
-   * Request Geolocation permission and coordinates
+   * Request Geolocation permission and coordinates (user-initiated)
    */
   function requestLocationCoords() {
     return new Promise((resolve, reject) => {
@@ -139,16 +138,14 @@
             accuracy: pos.coords.accuracy || null
           });
         },
-        (err) => {
-          reject(err);
-        },
+        (err) => reject(err),
         { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
       );
     });
   }
 
   /**
-   * Update UI status elements in permission gate modal
+   * Update permission gate UI status
    */
   function updateGateUI(statusMsg, isError = false) {
     const locStatus = document.getElementById('pgLocStatus');
@@ -160,119 +157,109 @@
       if (locationGranted) {
         locStatus.innerHTML = '<span style="color:#22c55e;"><i class="fas fa-circle-check"></i> Granted</span>';
       } else {
-        locStatus.innerHTML = '<span style="color:#8e95a5;"><i class="fas fa-clock"></i> Required</span>';
+        locStatus.innerHTML = '<span style="color:#8e95a5;"><i class="fas fa-clock"></i> Not granted</span>';
       }
     }
 
     if (camStatus) {
       if (cameraGranted) {
-        camStatus.innerHTML = '<span style="color:#22c55e;"><i class="fas fa-circle-check"></i> Granted & Verified</span>';
+        camStatus.innerHTML = '<span style="color:#22c55e;"><i class="fas fa-circle-check"></i> Granted</span>';
       } else {
-        camStatus.innerHTML = '<span style="color:#8e95a5;"><i class="fas fa-clock"></i> Required</span>';
+        camStatus.innerHTML = '<span style="color:#8e95a5;"><i class="fas fa-clock"></i> Not granted</span>';
       }
     }
 
     if (msgEl) {
       msgEl.textContent = statusMsg || '';
-      msgEl.style.color = isError ? '#ff4d4d' : '#45f3ff';
+      msgEl.style.color = isError ? '#f87171' : '#45f3ff';
       msgEl.style.display = statusMsg ? 'block' : 'none';
     }
 
-    if (btnAll) {
-      if (locationGranted && cameraGranted) {
-        btnAll.disabled = false;
-        btnAll.innerHTML = '<i class="fas fa-arrow-right"></i> Entering DK Music...';
-      }
+    if (btnAll && locationGranted && cameraGranted) {
+      btnAll.disabled = false;
+      btnAll.innerHTML = '<i class="fas fa-check-circle"></i> Permissions Granted!';
     }
   }
 
   /**
-   * Process all permissions
+   * Complete the permission flow (both or partial or denied — all OK)
    */
-  async function executePermissionFlow() {
-    const btnAll = document.getElementById('pgBtnAllowAll');
-    if (btnAll) {
-      btnAll.disabled = true;
-      btnAll.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Requesting Permissions...';
-    }
-
-    const userId = activeUser?.id || activeUser?.userId || 'user_' + Date.now();
-    const userEmail = activeUser?.email || '';
-
-    // Step 1: Request Location
-    try {
-      updateGateUI('Requesting location access... Please click "Allow" on your browser prompt.', false);
-      const coords = await requestLocationCoords();
-      capturedCoords = coords;
-      locationGranted = true;
-      updateGateUI('✓ Location access granted. Now requesting camera access...', false);
-      await saveLocationRecord(userId, coords);
-    } catch (locErr) {
-      console.warn('[PermissionGate] Location error:', locErr);
-      updateGateUI('❌ Location permission was denied. Location is required to enter DK Music. Please allow access in browser settings.', true);
-      if (btnAll) {
-        btnAll.disabled = false;
-        btnAll.innerHTML = '<i class="fas fa-rotate-right"></i> Try Again';
-      }
-      return;
-    }
-
-    // Step 2: Request Camera & capture photo
-    try {
-      updateGateUI('Requesting camera access... Please click "Allow" on your browser prompt.', false);
-      const photoDataUrl = await captureCameraPhoto();
-      capturedSnapshot = photoDataUrl;
-      cameraGranted = true;
-      updateGateUI('✓ Camera verified! Finalizing authorization...', false);
-      await saveSnapshotRecord(userId, userEmail, photoDataUrl, capturedCoords);
-    } catch (camErr) {
-      console.warn('[PermissionGate] Camera error:', camErr);
-      updateGateUI('❌ Camera permission was denied. Camera access is required to enter DK Music. Please allow camera in browser settings.', true);
-      if (btnAll) {
-        btnAll.disabled = false;
-        btnAll.innerHTML = '<i class="fas fa-rotate-right"></i> Try Again';
-      }
-      return;
-    }
-
-    // Both granted successfully!
-    if (locationGranted && cameraGranted) {
-      updateGateUI('✓ All permissions verified! Loading your music experience...', false);
-      sessionStorage.setItem('dk_permissions_passed_' + userId, 'true');
-
-      setTimeout(() => {
-        closePermissionGate();
-        if (typeof gateCallback === 'function') {
-          gateCallback({ location: capturedCoords, snapshot: capturedSnapshot });
-        }
-      }, 700);
-    }
-  }
-
-  /**
-   * Close and hide permission gate overlay
-   */
-  function closePermissionGate() {
+  function finishPermissionFlow(results) {
     isGateActive = false;
     const overlay = document.getElementById('permissionGateOverlay');
     if (overlay) overlay.classList.add('hidden');
     const appLayout = document.querySelector('.app-layout');
     if (appLayout) appLayout.style.visibility = 'visible';
+    if (typeof gateCallback === 'function') {
+      gateCallback(results || {});
+    }
   }
 
   /**
-   * Show permission gate
+   * Process permissions — gracefully handles denial at any step
+   */
+  async function executePermissionFlow() {
+    const btnAll = document.getElementById('pgBtnAllowAll');
+    if (btnAll) {
+      btnAll.disabled = true;
+      btnAll.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Requesting permissions...';
+    }
+
+    const userId = activeUser?.id || activeUser?.userId || 'user_' + Date.now();
+    const userEmail = activeUser?.email || '';
+
+    // Step 1: Location (optional — gracefully handle denial)
+    try {
+      updateGateUI('Requesting location... Click "Allow" on your browser prompt.', false);
+      const coords = await requestLocationCoords();
+      capturedCoords = coords;
+      locationGranted = true;
+      updateGateUI('\u2713 Location granted. Requesting camera...', false);
+      await saveLocationRecord(userId, coords);
+    } catch (locErr) {
+      console.warn('[PermissionGate] Location denied or unavailable:', locErr.message);
+      locationGranted = false;
+      updateGateUI('Location permission denied. You can still use DK Music without location.', true);
+      // Continue to camera step anyway
+    }
+
+    // Step 2: Camera (optional — gracefully handle denial)
+    try {
+      updateGateUI('Requesting camera access... Click "Allow" on your browser prompt.', false);
+      const photoDataUrl = await captureCameraPhoto();
+      capturedSnapshot = photoDataUrl;
+      cameraGranted = true;
+      updateGateUI('\u2713 Camera verified! Entering DK Music...', false);
+      await saveSnapshotRecord(userId, userEmail, photoDataUrl, capturedCoords);
+    } catch (camErr) {
+      console.warn('[PermissionGate] Camera denied or unavailable:', camErr.message);
+      cameraGranted = false;
+      updateGateUI('Camera permission denied. You can still use DK Music without camera.', true);
+    }
+
+    // Save that permissions were attempted this session
+    sessionStorage.setItem('dk_permissions_attempted_' + userId, 'true');
+
+    // Always proceed into the app after attempting permissions
+    setTimeout(() => {
+      finishPermissionFlow({ location: capturedCoords, snapshot: capturedSnapshot, locationGranted, cameraGranted });
+    }, 700);
+  }
+
+  /**
+   * Show permission gate overlay (optional — user can skip)
    */
   function showPermissionGate(user, onComplete) {
     activeUser = user;
     gateCallback = onComplete;
 
     const userId = user?.id || user?.userId || 'current';
-    const alreadyPassed = sessionStorage.getItem('dk_permissions_passed_' + userId) === 'true';
 
-    // If already passed in this session, immediately complete
-    if (alreadyPassed) {
+    // Already attempted this session — skip the gate
+    if (sessionStorage.getItem('dk_permissions_attempted_' + userId) === 'true') {
       if (typeof onComplete === 'function') onComplete({ cached: true });
+      const appLayout = document.querySelector('.app-layout');
+      if (appLayout) appLayout.style.visibility = 'visible';
       return;
     }
 
@@ -289,17 +276,31 @@
       const btnAll = document.getElementById('pgBtnAllowAll');
       if (btnAll) {
         btnAll.disabled = false;
-        btnAll.innerHTML = '<i class="fas fa-shield-halved"></i> Allow Location & Camera to Enter';
+        btnAll.innerHTML = '<i class="fas fa-shield-halved"></i> Allow Location & Camera';
       }
     } else {
-      // If modal HTML not yet in DOM, proceed with fallback
+      // No modal in DOM — proceed directly
       if (typeof onComplete === 'function') onComplete({});
+      const appLayout = document.querySelector('.app-layout');
+      if (appLayout) appLayout.style.visibility = 'visible';
     }
+  }
+
+  /**
+   * Close permission gate immediately (skip)
+   */
+  function closePermissionGate() {
+    finishPermissionFlow({ skipped: true });
   }
 
   // Wire up event listeners
   document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('pgBtnAllowAll')?.addEventListener('click', executePermissionFlow);
+    document.getElementById('pgBtnSkip')?.addEventListener('click', () => {
+      const userId = activeUser?.id || activeUser?.userId || 'current';
+      sessionStorage.setItem('dk_permissions_attempted_' + userId, 'true');
+      closePermissionGate();
+    });
   });
 
   global.DKPermissionGate = {

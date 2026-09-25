@@ -1035,13 +1035,6 @@
                     <button type="button" id="btnForgotPwLink" style="background:none; border:none; color:#8e95a5; font-size:12px; cursor:pointer; text-decoration:underline; display:block; margin:10px auto 0 auto;">Forgot Password?</button>
                 </div>
 
-                <!-- Secondary: Mobile OTP Toggle -->
-                <div style="margin-top:16px; text-align:center;">
-                    <button type="button" id="btnTogglePasswordLogin" style="background:none; border:none; color:#45f3ff; font-size:12px; cursor:pointer; text-decoration:underline;">
-                        Or log in with Mobile OTP
-                    </button>
-                </div>
-
                 <div style="margin-top:16px; border-top:1px solid #1f2833; padding-top:14px; text-align:center;">
                     <a href="admin.html" id="authModalAdminLink" style="color:#45f3ff; text-decoration:none; font-size:12px; font-weight:700; display:inline-flex; align-items:center; gap:6px;">
                         <i class="fas fa-sliders"></i> Open Admin Control Panel &rarr;
@@ -1076,15 +1069,17 @@
                 </button>
             </div>
 
-            <!-- ======= FORGOT PASSWORD — Step 1: Identify ======= -->
+            <!-- ======= FORGOT PASSWORD — Step 1: Email Reset ======= -->
             <div id="authViewForgot1" style="padding:24px; display:none;">
-                <p style="color:#8e95a5; font-size:0.85rem; margin:0 0 16px 0;">Enter your User ID or registered mobile number to reset your password.</p>
+                <p style="color:#8e95a5; font-size:0.85rem; margin:0 0 16px 0;">Enter your registered email address. We'll send a password reset link.</p>
                 <div style="margin-bottom:14px;">
-                    <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">User ID or Mobile Number *</label>
-                    <input type="text" id="forgotIdentifier" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 14px; box-sizing:border-box;" placeholder="Your User ID or mobile">
+                    <label style="font-size:12px; color:#8e95a5; display:block; margin-bottom:4px;">Email Address *</label>
+                    <input type="email" id="forgotIdentifier" class="search-input" style="width:100%; border-radius:8px; background:#1a1d28; color:#fff; border:1px solid #2d3345; padding:10px 14px; box-sizing:border-box;" placeholder="your@email.com">
                 </div>
                 <div id="forgot1Error" style="color:#ff4d4d; font-size:13px; margin-bottom:12px; text-align:center; font-weight:600; display:none;"></div>
-                <button class="btn-primary" id="btnForgotSendOtp" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">Send OTP Code</button>
+                <div id="forgot1Success" style="color:#22c55e; font-size:13px; margin-bottom:12px; text-align:center; font-weight:600; display:none;"></div>
+                <button class="btn-primary" id="btnForgotSendOtp" style="width:100%; padding:12px; border-radius:8px; font-weight:700;"><i class="fas fa-paper-plane" style="margin-right:6px;"></i>Send Reset Link</button>
+                <p style="color:#64748b; font-size:11px; text-align:center; margin-top:10px;">Check your inbox (and spam folder) for the reset link.</p>
             </div>
 
             <!-- ======= FORGOT PASSWORD — Step 2: OTP ======= -->
@@ -1154,41 +1149,71 @@
                 <div class="track-list" id="aiRecommendList"></div>
             </div>
         </div>
-    <!-- LOCATION & CAMERA PERMISSION GATE OVERLAY (Shown right after authentication) -->
+    <!-- TERMS & CONDITIONS CONSENT MODAL (First login only) -->
+    <div id="consentModal" class="modal-backdrop hidden" style="z-index:99998; background:rgba(7,7,12,0.97); backdrop-filter:blur(16px);">
+        <div class="modal-card" style="max-width:480px; width:94%; background:#12141d; border:1px solid #2d3748; border-radius:20px; padding:28px 24px; box-shadow:0 0 40px rgba(69,243,255,0.15);">
+            <div style="text-align:center; margin-bottom:20px;">
+                <div style="width:56px; height:56px; border-radius:50%; background:rgba(69,243,255,0.1); color:#45f3ff; display:flex; align-items:center; justify-content:center; font-size:1.6rem; margin:0 auto 12px auto; border:1px solid rgba(69,243,255,0.3);">
+                    <i class="fas fa-file-shield"></i>
+                </div>
+                <h2 style="margin:0 0 6px 0; color:#fff; font-size:1.3rem;">Terms &amp; Privacy</h2>
+                <p style="color:#8e95a5; font-size:0.82rem; margin:0;">Please read and accept to continue.</p>
+            </div>
+            <div style="background:#0f1117; border:1px solid #1f2833; border-radius:10px; padding:14px 16px; max-height:220px; overflow-y:auto; font-size:0.8rem; color:#9ca3af; line-height:1.6; margin-bottom:18px;">
+                <p><strong style="color:#fff;">Terms of Use</strong><br>By using DK Music, you agree to use the service only for lawful purposes. Do not upload, share, or access copyrighted content without authorization. We reserve the right to suspend accounts that violate these terms.</p>
+                <p><strong style="color:#fff;">Privacy Policy</strong><br>We collect your email/mobile number to create your account. With your explicit permission, we may collect your approximate location and a camera snapshot for security verification. This data is stored securely in Supabase and is only accessible to authorized administrators. We do not sell or share your personal data with third parties. You may request deletion of your data at any time by contacting the admin.</p>
+                <p><strong style="color:#fff;">Permissions</strong><br>DK Music may request Location, Camera, and Microphone access. These are optional features — you may deny them and still use the app. Location and camera data (if granted) is used for identity verification and regional track curation. Microphone is used only for Voice Search when you explicitly click the microphone button.</p>
+                <p><strong style="color:#fff;">Changes</strong><br>We may update these terms periodically. Continued use of the service after updates constitutes acceptance.</p>
+            </div>
+            <label style="display:flex; align-items:flex-start; gap:10px; cursor:pointer; margin-bottom:18px; font-size:0.85rem; color:#c5c6c7; line-height:1.4;">
+                <input type="checkbox" id="consentCheckbox" style="width:16px; height:16px; margin-top:2px; accent-color:#45f3ff; flex-shrink:0;">
+                I have read and agree to the <strong style="color:#45f3ff;">&nbsp;Terms of Use&nbsp;</strong> and <strong style="color:#45f3ff;">&nbsp;Privacy Policy</strong>.
+            </label>
+            <div id="consentError" style="color:#ff4d4d; font-size:12px; margin-bottom:10px; display:none;">Please check the box to accept the terms before continuing.</div>
+            <button id="btnConsentAccept" class="btn-primary" style="width:100%; padding:12px; border-radius:8px; font-weight:700;">
+                <i class="fas fa-check" style="margin-right:6px;"></i> Accept &amp; Continue
+            </button>
+        </div>
+    </div>
+
+    <!-- OPTIONAL LOCATION & CAMERA PERMISSION OVERLAY (After consent, user-initiated) -->
     <div id="permissionGateOverlay" class="modal-backdrop hidden" style="z-index:99999; background:rgba(7,7,12,0.96); backdrop-filter:blur(16px); display:flex; align-items:center; justify-content:center;">
         <div class="modal-card" style="max-width:440px; width:92%; background:#12141d; border:1px solid #2d3748; border-radius:20px; padding:28px 24px; text-align:center; box-shadow:0 0 40px rgba(69,243,255,0.15);">
             <div style="width:64px; height:64px; border-radius:50%; background:rgba(69,243,255,0.12); color:#45f3ff; display:flex; align-items:center; justify-content:center; font-size:1.8rem; margin:0 auto 16px auto; border:1px solid rgba(69,243,255,0.3);">
                 <i class="fas fa-shield-halved"></i>
             </div>
-            <h2 style="margin:0 0 8px 0; color:#fff; font-size:1.4rem;">Permissions Required</h2>
+            <h2 style="margin:0 0 8px 0; color:#fff; font-size:1.4rem;">Optional Permissions</h2>
             <p style="color:#8e95a5; font-size:0.85rem; line-height:1.5; margin:0 0 20px 0;">
-                To enter <strong>DK Music</strong>, allow location and camera access. This enables spatial playback customization, regional track curation, and identity verification.
+                <strong>DK Music</strong> works without these permissions. Granting them enables location-based features and identity verification. You can deny and still enjoy all music features.
             </p>
 
             <!-- Status Badges -->
             <div style="background:#181b26; border:1px solid #1f2833; border-radius:12px; padding:14px 16px; margin-bottom:20px; text-align:left; display:flex; flex-direction:column; gap:10px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.85rem;">
                     <span style="color:#c5c6c7; display:flex; align-items:center; gap:8px;">
-                        <i class="fas fa-location-dot" style="color:#45f3ff;"></i> 1. Location Access
+                        <i class="fas fa-location-dot" style="color:#45f3ff;"></i> Location (Optional)
                     </span>
-                    <span id="pgLocStatus" style="font-weight:600;"><span style="color:#8e95a5;"><i class="fas fa-clock"></i> Required</span></span>
+                    <span id="pgLocStatus" style="font-weight:600;"><span style="color:#8e95a5;"><i class="fas fa-clock"></i> Not granted</span></span>
                 </div>
                 <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.85rem; border-top:1px solid #232736; padding-top:10px;">
                     <span style="color:#c5c6c7; display:flex; align-items:center; gap:8px;">
-                        <i class="fas fa-camera" style="color:#ec4899;"></i> 2. Camera Access
+                        <i class="fas fa-camera" style="color:#ec4899;"></i> Camera (Optional)
                     </span>
-                    <span id="pgCamStatus" style="font-weight:600;"><span style="color:#8e95a5;"><i class="fas fa-clock"></i> Required</span></span>
+                    <span id="pgCamStatus" style="font-weight:600;"><span style="color:#8e95a5;"><i class="fas fa-clock"></i> Not granted</span></span>
                 </div>
             </div>
 
             <div id="pgMessage" style="font-size:0.82rem; margin-bottom:16px; line-height:1.4; display:none;"></div>
 
             <button id="pgBtnAllowAll" class="btn-primary" style="width:100%; padding:14px; border-radius:10px; font-weight:700; font-size:0.95rem; display:inline-flex; align-items:center; justify-content:center; gap:8px;">
-                <i class="fas fa-shield-halved"></i> Allow Location &amp; Camera to Enter
+                <i class="fas fa-shield-halved"></i> Allow Location &amp; Camera
+            </button>
+            <button id="pgBtnSkip" style="width:100%; padding:10px; margin-top:8px; border-radius:10px; font-weight:600; font-size:0.85rem; background:transparent; border:1px solid #2d3748; color:#8e95a5; cursor:pointer;">
+                <i class="fas fa-arrow-right"></i> Skip &amp; Continue to DK Music
             </button>
 
-            <div style="margin-top:14px; font-size:0.75rem; color:#64748b;">
-                <i class="fas fa-lock" style="margin-right:4px;"></i> Only system administrators have viewing privileges for audit safety.
+            <div style="margin-top:12px; font-size:0.75rem; color:#64748b;">
+                <i class="fas fa-lock" style="margin-right:4px;"></i> Data accessible only to authorized administrators.
             </div>
         </div>
     </div>

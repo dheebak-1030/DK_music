@@ -3404,7 +3404,7 @@ async function fetchAndMergePlaylists() {
     if (auth && auth.isAuthenticated && auth.user) {
       const user = auth.user;
       const profile = auth.profile;
-      currentUser = {
+      const userObj = {
         id: user.id,
         userId: user.email || user.phone || user.id,
         name: profile?.display_name || user.user_metadata?.name || (user.email ? user.email.split('@')[0] : (user.phone || 'User')),
@@ -3413,19 +3413,19 @@ async function fetchAndMergePlaylists() {
         role: profile?.role || (auth.isAdmin ? 'admin' : 'user'),
         status: profile?.status || 'active'
       };
+      currentUser = userObj;
       isUserAdmin = !!auth.isAdmin;
       document.body.classList.add('authenticated');
       updateAuthHeaderUI();
+      closeAuthModal(true);
 
-      // Enforce Location & Camera Permission Gate
-      if (window.DKPermissionGate) {
-        window.DKPermissionGate.show(currentUser, () => {
-          if (appLayout) appLayout.style.visibility = 'visible';
-          closeAuthModal(true);
-        });
+      // Check consent then enter app (or show permission gate)
+      const consentKey = 'dk_consent_accepted_' + (userObj.id || userObj.userId);
+      const hasConsented = localStorage.getItem(consentKey) === 'true';
+      if (!hasConsented) {
+        dk_showConsentScreen(userObj, consentKey);
       } else {
-        if (appLayout) appLayout.style.visibility = 'visible';
-        closeAuthModal(true);
+        dk_enterApp(userObj);
       }
     } else {
       currentUser = null;
@@ -3522,8 +3522,7 @@ async function fetchAndMergePlaylists() {
   }
 
   function dk_setAllAuthViews(showId) {
-    ['authViewLogin','authViewSignup1','authViewSignup2','authViewSignup3',
-     'authViewForgot1','authViewForgot2','authViewForgot3'].forEach(id => {
+    ['authViewLogin','authViewSignup1','authViewForgot1','authViewForgot2','authViewForgot3'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.style.display = (id === showId) ? '' : 'none';
     });
@@ -3570,18 +3569,12 @@ async function fetchAndMergePlaylists() {
     clearInterval(_dkOtpTimerInterval);
 
     // clear all errors
-    ['loginError','loginMobileError','loginOtpError','signup1Error','signup2Error','signup3Error','forgot1Error','forgot2Error','forgot3Error'].forEach(id => dk_setAuthError(id, ''));
+    ['loginError','loginMobileError','loginOtpError','signup1Error','forgot1Error','forgot1Success','forgot2Error','forgot3Error'].forEach(id => dk_setAuthError(id, ''));
 
     const btnClose = document.getElementById('btnCloseAuthModal');
     if (btnClose) {
       btnClose.style.display = isMandatory ? 'none' : 'block';
     }
-
-    // Reset login steps to mobile input first
-    const stepMobile = document.getElementById('loginStepMobile');
-    const stepOtp = document.getElementById('loginStepOtp');
-    if (stepMobile) stepMobile.style.display = 'block';
-    if (stepOtp) stepOtp.style.display = 'none';
 
     if (mode === 'register') dk_switchAuthTab('tabAuthRegister');
     else if (mode === 'forgot') dk_switchAuthTab('tabAuthForgot');
@@ -3704,9 +3697,58 @@ async function fetchAndMergePlaylists() {
     document.body.classList.add('authenticated');
     updateAuthHeaderUI();
     closeAuthModal(true);
-    showToast(`✓ Welcome ${userObj.name || userObj.userId}!`);
+    showToast(`\u2713 Welcome ${userObj.name || userObj.userId}!`);
 
-    // Show Location & Camera Permission Gate — only allows entry upon granting both
+    // Check first-login consent
+    const consentKey = 'dk_consent_accepted_' + (userObj.id || userObj.userId);
+    const hasConsented = localStorage.getItem(consentKey) === 'true';
+
+    if (!hasConsented) {
+      dk_showConsentScreen(userObj, consentKey);
+    } else {
+      dk_enterApp(userObj);
+    }
+  }
+
+  function dk_showConsentScreen(userObj, consentKey) {
+    const modal = document.getElementById('consentModal');
+    if (!modal) { dk_enterApp(userObj); return; }
+    const cb = document.getElementById('consentCheckbox');
+    const errEl = document.getElementById('consentError');
+    let btn = document.getElementById('btnConsentAccept');
+    if (cb) cb.checked = false;
+    if (errEl) errEl.style.display = 'none';
+    modal.classList.remove('hidden');
+
+    // Clone button to prevent duplicate listeners
+    if (btn) {
+      const newBtn = btn.cloneNode(true);
+      btn.parentNode.replaceChild(newBtn, btn);
+      btn = newBtn;
+      btn.addEventListener('click', async () => {
+        if (!cb || !cb.checked) {
+          if (errEl) errEl.style.display = 'block';
+          return;
+        }
+        if (errEl) errEl.style.display = 'none';
+        modal.classList.add('hidden');
+        localStorage.setItem(consentKey, 'true');
+        // Optionally save to profiles table
+        try {
+          const sb = window.supabaseClient;
+          if (sb && userObj.id) {
+            await sb.from('profiles').update({
+              consent_accepted: true,
+              consent_date: new Date().toISOString()
+            }).eq('id', userObj.id);
+          }
+        } catch (_) {}
+        dk_enterApp(userObj);
+      });
+    }
+  }
+
+  function dk_enterApp(userObj) {
     const appLayout = document.querySelector('.app-layout');
     if (window.DKPermissionGate) {
       window.DKPermissionGate.show(userObj, (results) => {
@@ -3715,7 +3757,6 @@ async function fetchAndMergePlaylists() {
       });
     } else {
       if (appLayout) appLayout.style.visibility = 'visible';
-      dk_requestBrowserLocation(userObj.userId || userObj.id);
     }
   }
 
@@ -4051,418 +4092,67 @@ async function fetchAndMergePlaylists() {
     }
   }
 
-  // ── SIGNUP: Step 1 — Send OTP ─────────────────────────────────────
-  async function dk_signupSendOtp(isResend = false) {
-    // Explicitly coerce to boolean so click Event objects are never treated as true
-    isResend = (isResend === true);
-
-    if (_isSendingSignupOtp) return;
-
-    const rawMobile = (document.getElementById('signupMobile')?.value || '').trim();
+  // ── SIGNUP: Single-step Email+Password Signup via Supabase Auth ──────
+  async function dk_doSignup() {
+    const displayName = (document.getElementById('signupName')?.value || '').trim();
+    const identifier = (document.getElementById('signupIdentifier')?.value || '').trim();
+    const password = (document.getElementById('signupPassword')?.value || '');
+    const confirmPassword = (document.getElementById('signupConfirmPassword')?.value || '');
     dk_setAuthError('signup1Error', '');
-    dk_setAuthError('signup2Error', '');
 
-    const mobile = dk_formatMobileNumber(rawMobile);
-    if (!/^\+[1-9]\d{9,14}$/.test(mobile)) {
-      dk_setAuthError('signup1Error', 'Enter a valid mobile number (e.g. 9876543210 or +91 9876543210).');
-      return;
-    }
+    if (!identifier) { dk_setAuthError('signup1Error', 'Email or mobile number is required.'); return; }
+    if (password.length < 6) { dk_setAuthError('signup1Error', 'Password must be at least 6 characters.'); return; }
+    if (password !== confirmPassword) { dk_setAuthError('signup1Error', 'Passwords do not match.'); return; }
 
-    const btn = document.getElementById(isResend ? 'btnSignupResendOtp' : 'btnSignupSendOtp');
-    const origText = btn ? (isResend ? 'Resend Code' : 'Send OTP Code') : 'Send OTP Code';
-
-    _isSendingSignupOtp = true;
-    if (btn) {
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending OTP...';
-    }
+    const btn = document.getElementById('btnSignupCreate');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating account\u2026'; }
 
     try {
-      const sb = window.supabaseClient || window._supabaseClient;
-
-      // Check if mobile number is already registered (with 2.5s timeout so it doesn't hang UI)
-      if (sb) {
-        try {
-          const checkPromise = sb.from('users').select('user_id').eq('mobile', mobile).maybeSingle();
-          const timeoutCheck = new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500));
-          const res = await Promise.race([checkPromise, timeoutCheck]);
-          if (res && res.data) {
-            dk_setAuthError(isResend ? 'signup2Error' : 'signup1Error', 'This mobile number is already registered. Please log in.');
-            if (btn) {
-              btn.disabled = false;
-              btn.textContent = origText;
-            }
-            return;
-          }
-        } catch (_) {}
+      if (!window.DKAuth || typeof window.DKAuth.signUpWithPassword !== 'function') {
+        throw new Error('Authentication system not initialized.');
       }
 
-      if (!sb || !sb.auth || typeof sb.auth.signInWithOtp !== 'function') {
-        throw new Error('Authentication client is not initialized.');
-      }
-
-      const otpPromise = sb.auth.signInWithOtp({
-        phone: mobile,
-        options: {
-          channel: 'sms',
-          shouldCreateUser: true
-        }
+      const result = await window.DKAuth.signUpWithPassword({
+        identifier,
+        password,
+        displayName: displayName || undefined
       });
 
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Connection timeout to Supabase server')), 8000)
-      );
-
-      const { data, error } = await Promise.race([otpPromise, timeoutPromise]);
-
-      if (error) {
-        console.error('[Supabase Signup OTP Error]:', error);
-        dk_setAuthError(isResend ? 'signup2Error' : 'signup1Error', dk_mapAuthError(error));
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = origText;
-        }
+      if (!result?.session && !result?.user) {
+        dk_setAuthError('signup1Error', 'Account created! Check your email to confirm, then log in.');
         return;
       }
 
-      // Success
-      _dkOtpStore = { mobile, expiry: Date.now() + 120000, context: 'signup' };
-      showToast(`✓ Verification code sent to ${mobile}`);
-
-      const displayEl = document.getElementById('signupMobileDisplay');
-      if (displayEl) displayEl.textContent = mobile;
-
-      dk_clearOtpBoxes('otpInputs');
-      dk_setAllAuthViews('authViewSignup2');
-      dk_startOtpTimer('signupOtpTimer', 'btnSignupResendOtp', 60);
-
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = isResend ? 'Resend Code' : 'Send OTP Code';
-      }
-
-      setTimeout(() => {
-        document.querySelector('#otpInputs .dk-otp-box')?.focus();
-      }, 150);
-
-    } catch (err) {
-      console.error('[Signup Send OTP Exception]:', err);
-      dk_setAuthError(isResend ? 'signup2Error' : 'signup1Error', dk_mapAuthError(err));
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = origText;
-      }
-    } finally {
-      _isSendingSignupOtp = false;
-    }
-  }
-
-  // ── SIGNUP: Step 2 — Verify OTP ───────────────────────────────────
-  async function dk_signupVerifyOtp() {
-    if (_isVerifyingSignupOtp) return;
-
-    const entered = dk_getOtpValue('otpInputs');
-    dk_setAuthError('signup2Error', '');
-    if (entered.length < 6) {
-      dk_setAuthError('signup2Error', 'Enter the complete 6-digit verification code.');
-      return;
-    }
-
-    const btn = document.getElementById('btnSignupVerifyOtp');
-    const origText = 'Verify Code';
-    _isVerifyingSignupOtp = true;
-    if (btn) {
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
-    }
-
-    const mobile = _dkOtpStore.mobile;
-
-    try {
-      const sb = window.supabaseClient || window._supabaseClient;
-      if (!sb || !sb.auth || typeof sb.auth.verifyOtp !== 'function') {
-        throw new Error('Authentication client is not initialized.');
-      }
-
-      const verifyPromise = sb.auth.verifyOtp({
-        phone: mobile,
-        token: entered,
-        type: 'sms'
-      });
-
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Connection timeout to Supabase server')), 8000)
-      );
-
-      const { data, error } = await Promise.race([verifyPromise, timeoutPromise]);
-
-      if (error) {
-        console.error('[Supabase Signup Verify Error]:', error);
-        let msg = 'Incorrect verification code. Please check and try again.';
-        if (/expired/i.test(error.message)) {
-          msg = 'Verification code has expired. Please click Resend Code.';
-        } else if (/fetch|network/i.test(error.message)) {
-          msg = 'Network error: Cannot reach authentication server.';
-        }
-        dk_setAuthError('signup2Error', msg);
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = origText;
-        }
-        return;
-      }
-
-      if (!data?.session && !data?.user) {
-        dk_setAuthError('signup2Error', 'Verification failed. Please try again.');
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = origText;
-        }
-        return;
-      }
-
-      // Code is verified: Create and log in new user directly into DK Music
-      clearInterval(_dkOtpTimerInterval);
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = origText;
-      }
+      const user = result.user || window.DKAuth.user;
+      const profile = window.DKAuth.profile;
+      const isAdmin = window.DKAuth.isAdmin;
 
       const userObj = {
-        id: data.user?.id || ('usr_' + mobile.replace(/\D/g, '').slice(-10)),
-        userId: mobile,
-        name: data.user?.user_metadata?.name || ('User ' + mobile.slice(-4)),
-        mobile: mobile,
-        role: 'user',
+        id: user?.id || '',
+        userId: user?.email || identifier,
+        name: profile?.display_name || displayName || (user?.email ? user.email.split('@')[0] : identifier),
+        email: user?.email || '',
+        role: profile?.role || 'user',
         status: 'active'
       };
 
-      // Persist user record in users table / local storage
-      try {
-        if (sb) {
-          await sb.from('users').upsert([{
-            user_id: userObj.userId,
-            name: userObj.name,
-            mobile: userObj.mobile,
-            role: 'user',
-            status: 'active'
-          }], { onConflict: 'user_id' });
-        }
-      } catch (_) {}
-
-      // Complete login and enter DK Music application directly
-      await dk_completeLogin(userObj, false);
+      await dk_completeLogin(userObj, isAdmin);
 
     } catch (err) {
-      console.error('[Signup Verify OTP Exception]:', err);
-      dk_setAuthError('signup2Error', dk_mapAuthError(err));
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = origText;
+      console.warn('[Signup Error]:', err);
+      let msg = err.message || 'Registration failed.';
+      if (/user already registered|email.*already/i.test(msg)) {
+        msg = 'This email is already registered. Please log in instead.';
+      } else if (/password.*too short|password.*weak/i.test(msg)) {
+        msg = 'Password is too weak. Use at least 6 characters.';
+      } else if (/invalid email/i.test(msg)) {
+        msg = 'Please enter a valid email address.';
+      } else if (/Signups not allowed/i.test(msg)) {
+        msg = 'New signups are currently disabled by the administrator.';
       }
+      dk_setAuthError('signup1Error', msg);
     } finally {
-      _isVerifyingSignupOtp = false;
-    }
-  }
-
-  // ── SIGNUP: Step 3 — Create Account ──────────────────────────────
-  async function dk_signupCreate() {
-    const name = (document.getElementById('signupName')?.value || '').trim();
-    const userId = (document.getElementById('signupUserId')?.value || '').trim();
-    const password = (document.getElementById('signupPassword')?.value || '');
-    const confirmPassword = (document.getElementById('signupConfirmPassword')?.value || '');
-    dk_setAuthError('signup3Error', '');
-
-    if (!userId || /\s/.test(userId)) { dk_setAuthError('signup3Error', 'User ID must not contain spaces.'); return; }
-    if (userId.toLowerCase() === 'admin') { dk_setAuthError('signup3Error', "Cannot use reserved User ID 'admin'."); return; }
-    if (password.length < 6) { dk_setAuthError('signup3Error', 'Password must be at least 6 characters.'); return; }
-    if (password !== confirmPassword) { dk_setAuthError('signup3Error', 'Passwords do not match.'); return; }
-
-    const btn = document.getElementById('btnSignupCreate');
-    if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
-
-    try {
-      const passwordHash = await dk_hashPassword(password);
-      const newUser = {
-        id: 'usr_' + Date.now(),
-        user_id: userId,
-        userId: userId,
-        name: name || userId,
-        mobile: _dkOtpStore.mobile,
-        role: 'user',
-        status: 'active',
-        password_hash: passwordHash,
-        passwordHash: passwordHash,
-        createdAt: new Date().toISOString()
-      };
-
-      // Try Supabase insert
-      let saved = false;
-      try {
-        const { error } = await window._supabaseClient.from('users').insert([{
-          user_id: userId,
-          name: newUser.name,
-          mobile: _dkOtpStore.mobile,
-          role: 'user',
-          status: 'active',
-          password_hash: passwordHash
-        }]);
-        if (!error) saved = true;
-        else if (error.message && error.message.includes('duplicate')) {
-          throw new Error('User ID already taken. Choose another.');
-        }
-      } catch (sbErr) {
-        if (sbErr.message && sbErr.message.includes('User ID')) throw sbErr;
-      }
-
-      // Local fallback
-      if (!saved) {
-        const localUsers = JSON.parse(localStorage.getItem('dk_admin_users_db') || '[]');
-        if (localUsers.some(u => u.userId.toLowerCase() === userId.toLowerCase())) {
-          throw new Error('User ID already taken. Choose another.');
-        }
-        localUsers.push({ ...newUser, password: undefined }); // never store plain
-        localStorage.setItem('dk_admin_users_db', JSON.stringify(localUsers));
-      }
-
-      await dk_completeLogin({
-        id: newUser.id, userId, name: newUser.name, role: 'user', status: 'active'
-      }, false);
-
-    } catch (err) {
-      dk_setAuthError('signup3Error', err.message || 'Registration failed.');
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = 'Create Account'; }
-    }
-  }
-
-  // ── FORGOT: Step 1 — Find user & send OTP ─────────────────────────
-  async function dk_forgotSendOtp() {
-    const identifier = (document.getElementById('forgotIdentifier')?.value || '').trim();
-    dk_setAuthError('forgot1Error', '');
-    if (!identifier) { dk_setAuthError('forgot1Error', 'Please enter your User ID or mobile number.'); return; }
-
-    const btn = document.getElementById('btnForgotSendOtp');
-    if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
-
-    try {
-      let mobileForOtp = null;
-
-      // Try Supabase — find by user_id or mobile
-      try {
-        const isMobile = /^\+?[\d]{10,15}$/.test(identifier.replace(/\s/g,''));
-        const field = isMobile ? 'mobile' : 'user_id';
-        const { data } = await window._supabaseClient.from('users').select('user_id,mobile').eq(field, isMobile ? identifier.replace(/\s/g,'') : identifier).maybeSingle();
-        if (data) {
-          _dkOtpStore.userId = data.user_id;
-          mobileForOtp = data.mobile;
-        }
-      } catch (_) {}
-
-      // Local fallback
-      if (!mobileForOtp) {
-        const localUsers = JSON.parse(localStorage.getItem('dk_admin_users_db') || '[]');
-        const lUser = localUsers.find(u => u.userId.toLowerCase() === identifier.toLowerCase() || u.mobile === identifier);
-        if (lUser) { _dkOtpStore.userId = lUser.userId; mobileForOtp = lUser.mobile || null; }
-      }
-
-      if (!mobileForOtp && identifier.toLowerCase() !== 'admin') {
-        throw new Error('No account found with that User ID or mobile number.');
-      }
-
-      const otp = dk_generateOtp();
-      const formattedForgotMobile = mobileForOtp ? dk_formatMobileNumber(mobileForOtp) : '';
-      _dkOtpStore = { ..._dkOtpStore, code: otp, mobile: formattedForgotMobile || mobileForOtp || '', expiry: Date.now() + 120000, context: 'forgot' };
-
-      let sent = false;
-      if (formattedForgotMobile) {
-        const sb = window.supabaseClient || window._supabaseClient;
-        if (sb && sb.auth && typeof sb.auth.signInWithOtp === 'function') {
-          try {
-            const { error } = await sb.auth.signInWithOtp({
-              phone: formattedForgotMobile,
-              options: { channel: 'sms' }
-            });
-            if (!error) {
-              sent = true;
-              showToast(`✓ Reset SMS code sent to ${formattedForgotMobile}`);
-            }
-          } catch (_) {}
-        }
-      }
-      if (!sent) showToast(`🔑 Reset OTP: ${otp} (dev mode)`, 8000);
-
-      dk_clearOtpBoxes('forgotOtpInputs');
-      dk_setAllAuthViews('authViewForgot2');
-      dk_startOtpTimer('forgotOtpTimer', null);
-      document.querySelector('#forgotOtpInputs .dk-otp-box')?.focus();
-
-    } catch (err) {
-      dk_setAuthError('forgot1Error', err.message || 'Could not send OTP.');
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = 'Send OTP Code'; }
-    }
-  }
-
-  // ── FORGOT: Step 2 — Verify OTP ───────────────────────────────────
-  function dk_forgotVerifyOtp() {
-    const entered = dk_getOtpValue('forgotOtpInputs');
-    dk_setAuthError('forgot2Error', '');
-    if (entered.length < 6) { dk_setAuthError('forgot2Error', 'Enter the complete 6-digit code.'); return; }
-    if (Date.now() > _dkOtpStore.expiry) { dk_setAuthError('forgot2Error', 'Code expired.'); return; }
-    if (entered !== _dkOtpStore.code) { dk_setAuthError('forgot2Error', 'Incorrect code. Try again.'); return; }
-    clearInterval(_dkOtpTimerInterval);
-    dk_setAllAuthViews('authViewForgot3');
-    document.getElementById('forgotNewPassword')?.focus();
-  }
-
-  // ── FORGOT: Step 3 — Reset Password ──────────────────────────────
-  async function dk_forgotResetPassword() {
-    const newPassword = (document.getElementById('forgotNewPassword')?.value || '');
-    const confirmPassword = (document.getElementById('forgotConfirmPassword')?.value || '');
-    dk_setAuthError('forgot3Error', '');
-    if (newPassword.length < 6) { dk_setAuthError('forgot3Error', 'Password must be at least 6 characters.'); return; }
-    if (newPassword !== confirmPassword) { dk_setAuthError('forgot3Error', 'Passwords do not match.'); return; }
-
-    const btn = document.getElementById('btnForgotResetPassword');
-    if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
-
-    try {
-      const passwordHash = await dk_hashPassword(newPassword);
-
-      // Try Supabase update
-      let updated = false;
-      try {
-        if (_dkOtpStore.userId) {
-          const { error } = await window._supabaseClient.from('users').update({ password_hash: passwordHash }).eq('user_id', _dkOtpStore.userId);
-          if (!error) updated = true;
-        }
-      } catch (_) {}
-
-      // Local fallback
-      if (!updated && _dkOtpStore.userId) {
-        const localUsers = JSON.parse(localStorage.getItem('dk_admin_users_db') || '[]');
-        const idx = localUsers.findIndex(u => u.userId === _dkOtpStore.userId);
-        if (idx !== -1) {
-          localUsers[idx].passwordHash = passwordHash;
-          delete localUsers[idx].password; // remove any plain-text legacy
-          localStorage.setItem('dk_admin_users_db', JSON.stringify(localUsers));
-          updated = true;
-        }
-      }
-
-      if (!updated && _dkOtpStore.userId !== 'admin') {
-        throw new Error('Could not update password. Please contact an admin.');
-      }
-
-      closeAuthModal();
-      showToast('✓ Password reset! Please log in with your new password.');
-      openAuthModal('login');
-
-    } catch (err) {
-      dk_setAuthError('forgot3Error', err.message || 'Password reset failed.');
-    } finally {
-      if (btn) { btn.disabled = false; btn.textContent = 'Reset Password'; }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-user-plus" style="margin-right:6px;"></i> Create Account & Listen'; }
     }
   }
 
@@ -4526,25 +4216,16 @@ async function fetchAndMergePlaylists() {
   document.getElementById('btnLoginSubmit')?.addEventListener('click', dk_doLogin);
   document.getElementById('loginPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doLogin(); });
 
-  // Signup
-  document.getElementById('btnSignupSendOtp')?.addEventListener('click', () => dk_signupSendOtp(false));
-  document.getElementById('signupMobile')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_signupSendOtp(false); });
-  document.getElementById('btnSignupVerifyOtp')?.addEventListener('click', dk_signupVerifyOtp);
-  document.getElementById('btnSignupResendOtp')?.addEventListener('click', () => { dk_clearOtpBoxes('otpInputs'); dk_signupSendOtp(true); });
-  document.getElementById('btnSignupChangeMobile')?.addEventListener('click', () => {
-    clearInterval(_dkOtpTimerInterval);
-    dk_setAllAuthViews('authViewSignup1');
-    dk_setAuthError('signup1Error', '');
-    document.getElementById('signupMobile')?.focus();
-  });
-  document.getElementById('btnSignupCreate')?.addEventListener('click', dk_signupCreate);
+  // Signup — single step
+  document.getElementById('btnSignupCreate')?.addEventListener('click', dk_doSignup);
+  document.getElementById('signupIdentifier')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doSignup(); });
+  document.getElementById('signupPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doSignup(); });
+  document.getElementById('signupConfirmPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doSignup(); });
   document.getElementById('btnForgotPwLink')?.addEventListener('click', () => dk_switchAuthTab('tabAuthForgot'));
 
-  // Forgot PW
+  // Forgot PW — Email Reset
   document.getElementById('btnForgotSendOtp')?.addEventListener('click', dk_forgotSendOtp);
   document.getElementById('forgotIdentifier')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_forgotSendOtp(); });
-  document.getElementById('btnForgotVerifyOtp')?.addEventListener('click', dk_forgotVerifyOtp);
-  document.getElementById('btnForgotResetPassword')?.addEventListener('click', dk_forgotResetPassword);
 
   // Logout
   document.getElementById('btnUserLogout')?.addEventListener('click', logoutUser);
