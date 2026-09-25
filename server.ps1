@@ -11,9 +11,14 @@ $usersFile = Join-Path $dataDir "users.json"
 $playlistsFile = Join-Path $dataDir "playlists.json"
 $songsFile = Join-Path $dataDir "songs.json"
 $locationsFile = Join-Path $dataDir "locations.json"
+$snapshotsFile = Join-Path $dataDir "snapshots.json"
 
 if (-not (Test-Path $locationsFile)) {
     @() | ConvertTo-Json | Set-Content $locationsFile -Encoding UTF8
+}
+
+if (-not (Test-Path $snapshotsFile)) {
+    @() | ConvertTo-Json | Set-Content $snapshotsFile -Encoding UTF8
 }
 
 if (-not (Test-Path $usersFile)) {
@@ -307,6 +312,37 @@ try {
             continue
         }
 
+        # ── User Camera Snapshot Storage API ──
+        if ($requestUrl -eq "/api/user-snapshots" -and $httpMethod -eq "POST") {
+            $req = Get-RequestBody $context
+            if ($req -and $req.user_id -and $req.image_data) {
+                $snaps = @()
+                if (Test-Path $snapshotsFile) {
+                    $raw = Get-Content $snapshotsFile -Raw -Encoding UTF8
+                    if ($raw) { $snaps = $raw | ConvertFrom-Json }
+                }
+                $snapList = [System.Collections.ArrayList]@()
+                if ($snaps) { $snaps | ForEach-Object { [void]$snapList.Add($_) } }
+                $newSnap = @{
+                    id = "snap_" + (Get-Date).Ticks
+                    user_id = $req.user_id
+                    user_email = if ($req.user_email) { $req.user_email } else { "" }
+                    image_data = $req.image_data
+                    latitude = $req.latitude
+                    longitude = $req.longitude
+                    accuracy = $req.accuracy
+                    captured_at = if ($req.captured_at) { $req.captured_at } else { (Get-Date).ToString("o") }
+                }
+                [void]$snapList.Insert(0, $newSnap)
+                while ($snapList.Count -gt 100) { [void]$snapList.RemoveAt($snapList.Count - 1) }
+                $snapList | ConvertTo-Json -Depth 5 | Set-Content $snapshotsFile -Encoding UTF8
+                Send-JsonResponse $context @{ success = $true; message = "Snapshot saved."; id = $newSnap.id } 200
+                continue
+            }
+            Send-JsonResponse $context @{ success = $false; error = "Missing user_id or image_data." } 400
+            continue
+        }
+
         # ── 2. ADMIN REST APIS (PROTECTED) ──────────────────────
         if ($requestUrl.StartsWith("/api/admin/")) {
             if (-not (Check-IsAdminToken $context)) {
@@ -322,6 +358,17 @@ try {
                     if ($raw) { $locations = $raw | ConvertFrom-Json }
                 }
                 Send-JsonResponse $context @{ success = $true; locations = $locations } 200
+                continue
+            }
+
+            # --- Admin User Snapshots ---
+            if ($requestUrl -eq "/api/admin/user-snapshots" -and $httpMethod -eq "GET") {
+                $snaps = @()
+                if (Test-Path $snapshotsFile) {
+                    $raw = Get-Content $snapshotsFile -Raw -Encoding UTF8
+                    if ($raw) { $snaps = $raw | ConvertFrom-Json }
+                }
+                Send-JsonResponse $context @{ success = $true; snapshots = $snaps } 200
                 continue
             }
 

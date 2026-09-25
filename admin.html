@@ -347,18 +347,18 @@
         <div class="login-gate-card">
             <div style="font-size: 2.5rem; color: #45f3ff; margin-bottom: 12px;"><i class="fas fa-shield-halved"></i></div>
             <h2 style="margin-top:0; color:#fff;">Admin Security Auth</h2>
-            <p style="color:#8e95a5; font-size:0.9rem;">Enter the administrative password to access system controls.</p>
+            <p style="color:#8e95a5; font-size:0.9rem;">Sign in with your administrative account to access system controls.</p>
             <form id="adminLoginForm" style="margin-top: 20px;">
-                <div style="margin-bottom:12px; text-align:left; font-size:0.85rem; color:#45f3ff; background:rgba(69,243,255,0.1); border:1px solid rgba(69,243,255,0.25); padding:10px 14px; border-radius:8px; display:flex; align-items:center; justify-content:space-between;">
-                    <span><i class="fas fa-key"></i> Default Password: <strong style="color:#fff; letter-spacing:1px;">Qwerty@866</strong></span>
-                    <button type="button" onclick="document.getElementById('adminGatePassword').value='Qwerty@866';" style="background:#45f3ff; color:#0b0c10; border:none; border-radius:4px; padding:3px 8px; font-size:0.75rem; font-weight:700; cursor:pointer;">Fill</button>
+                <div style="margin-bottom:12px; text-align:left;">
+                    <label style="font-size:0.8rem; color:#8e95a5; display:block; margin-bottom:4px;">Admin Email or Mobile *</label>
+                    <input type="text" id="adminGateUser" placeholder="admin@dkmusic.com or mobile" class="search-admin-input" style="max-width:100%;" required>
                 </div>
-                <input type="password" id="adminGatePassword" value="Qwerty@866" placeholder="Enter Admin Password (Qwerty@866)" class="search-admin-input" style="max-width:100%; margin-bottom:12px;" required>
-                <button type="submit" class="btn-primary" style="width:100%; padding:12px; font-weight:700; font-size:0.95rem;">
+                <div style="margin-bottom:14px; text-align:left;">
+                    <label style="font-size:0.8rem; color:#8e95a5; display:block; margin-bottom:4px;">Password *</label>
+                    <input type="password" id="adminGatePassword" placeholder="Enter Admin Password" class="search-admin-input" style="max-width:100%;" required>
+                </div>
+                <button type="submit" id="btnAdminGateSubmit" class="btn-primary" style="width:100%; padding:12px; font-weight:700; font-size:0.95rem;">
                     <i class="fas fa-lock-open"></i> Authorize Admin Access
-                </button>
-                <button type="button" id="btnInstantAdminAccess" class="btn-outline" style="width:100%; padding:10px; margin-top:10px; color:#22c55e; border-color:#22c55e; font-weight:700;">
-                    <i class="fas fa-bolt"></i> 1-Click Instant Access (Skip Password)
                 </button>
             </form>
             <div id="adminGateError" style="color:#ff4d4d; margin-top:12px; font-weight:600; display:none;"></div>
@@ -393,6 +393,7 @@
             <button class="tab-btn" data-tab="home-sections"><i class="fas fa-table-columns"></i> Home Sections</button>
             <button class="tab-btn" data-tab="users"><i class="fas fa-users"></i> Users</button>
             <button class="tab-btn" data-tab="locations" id="tabBtnLocations"><i class="fas fa-location-dot"></i> User Locations</button>
+            <button class="tab-btn" data-tab="snapshots" id="tabBtnSnapshots"><i class="fas fa-camera"></i> User Snapshots</button>
             <button class="tab-btn" data-tab="playlists"><i class="fas fa-list-check"></i> Playlists</button>
             <button class="tab-btn" data-tab="songs"><i class="fas fa-compact-disc"></i> Songs Catalog</button>
             <button class="tab-btn" data-tab="settings"><i class="fas fa-gear"></i> App Settings</button>
@@ -734,6 +735,38 @@
             </div>
         </div>
 
+        <!-- TAB 1C: USER CAMERA SNAPSHOTS -->
+        <div id="tab-snapshots" class="tab-content-panel">
+            <div class="admin-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:10px;">
+                    <div>
+                        <h3 style="margin:0; color:#fff;"><i class="fas fa-camera" style="color:#ec4899;"></i> User Verification Snapshots (<span id="snapshotCount">0</span>)</h3>
+                        <p style="margin:4px 0 0 0; color:#8e95a5; font-size:0.85rem;">Confidential camera snapshots captured upon post-authentication permission grant. Administrator audit access only.</p>
+                    </div>
+                    <button id="btnRefreshSnapshots" class="btn-primary" style="padding: 8px 16px; font-size:0.85rem; background:#ec4899;">
+                        <i class="fas fa-arrows-rotate"></i> Refresh Snapshots
+                    </button>
+                </div>
+
+                <div style="overflow-x:auto;">
+                    <table class="admin-table">
+                        <thead>
+                            <tr>
+                                <th>User ID / Account</th>
+                                <th>Camera Snapshot</th>
+                                <th>Associated Location</th>
+                                <th>Captured Time</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="userSnapshotsTableBody">
+                            <!-- JS Populated -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
         <!-- TAB 2: PLAYLISTS MANAGEMENT -->
         <div id="tab-playlists" class="tab-content-panel">
             <div class="admin-card">
@@ -983,6 +1016,18 @@
     </div>
     <div id="adminToast" class="admin-toast"></div>
 
+    <!-- Snapshot Lightbox Modal -->
+    <div id="snapshotLightboxModal" class="login-gate-overlay" style="display:none; background:rgba(0,0,0,0.92); z-index:100000;">
+        <div style="position:relative; max-width:600px; width:90%; background:#12141d; border:1px solid #45f3ff; border-radius:16px; padding:24px; text-align:center;">
+            <button type="button" onclick="document.getElementById('snapshotLightboxModal').style.display='none';" style="position:absolute; top:12px; right:16px; background:transparent; border:none; color:#8e95a5; font-size:1.4rem; cursor:pointer;"><i class="fas fa-xmark"></i></button>
+            <h3 id="lightboxTitle" style="margin-top:0; color:#fff; font-size:1.1rem;"><i class="fas fa-camera" style="color:#ec4899;"></i> User Snapshot</h3>
+            <div style="border-radius:12px; overflow:hidden; border:1px solid #232736; margin-bottom:14px; background:#000;">
+                <img id="lightboxImg" src="" alt="User Snapshot" style="width:100%; height:auto; max-height:420px; object-fit:contain; display:block;">
+            </div>
+            <div id="lightboxMeta" style="color:#8e95a5; font-size:0.85rem; line-height:1.5;"></div>
+        </div>
+    </div>
+
     <script src="node_modules/@supabase/supabase-js/dist/umd/supabase.js"></script>
     <script>
         if (!window.supabase || typeof window.supabase.createClient !== 'function') {
@@ -990,6 +1035,7 @@
         }
     </script>
     <script src="supabase-client.js"></script>
+    <script src="auth-manager.js"></script>
     <script src="music-data.js"></script>
     <script src="cloud-storage.js"></script>
     <script src="admin.js"></script>

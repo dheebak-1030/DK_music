@@ -3364,27 +3364,74 @@ async function fetchAndMergePlaylists() {
   // ── USER AUTHENTICATION SYSTEM ─────────────────────────────
   // ============================================================
   let currentUser = null;
-  let userAuthToken = localStorage.getItem('dk_user_token') || '';
   let isUserAdmin = false;
 
   function initAuthSystem() {
-    const storedUser = localStorage.getItem('dk_user_info');
     const appLayout = document.querySelector('.app-layout');
-    if (userAuthToken && storedUser) {
-      try {
-        currentUser = JSON.parse(storedUser);
-        isUserAdmin = (currentUser.role === 'admin' || currentUser.userId === 'admin');
-        document.body.classList.add('authenticated');
+    
+    // Connect to centralized DKAuth
+    if (window.DKAuth) {
+      window.DKAuth.onReady(auth => {
+        handleDKAuthState(auth);
+      });
+      window.DKAuth.onChange(auth => {
+        handleDKAuthState(auth);
+      });
+    } else {
+      const storedUser = localStorage.getItem('dk_user_info');
+      if (storedUser) {
+        try {
+          currentUser = JSON.parse(storedUser);
+          isUserAdmin = (currentUser.role === 'admin' || currentUser.userId === 'admin');
+          document.body.classList.add('authenticated');
+          updateAuthHeaderUI();
+          if (appLayout) appLayout.style.visibility = 'visible';
+          closeAuthModal(true);
+        } catch (e) {
+          logoutUser();
+        }
+      } else {
+        document.body.classList.remove('authenticated');
         updateAuthHeaderUI();
+        if (appLayout) appLayout.style.visibility = 'hidden';
+        openAuthModal('login', true);
+      }
+    }
+  }
+
+  function handleDKAuthState(auth) {
+    const appLayout = document.querySelector('.app-layout');
+    if (auth && auth.isAuthenticated && auth.user) {
+      const user = auth.user;
+      const profile = auth.profile;
+      currentUser = {
+        id: user.id,
+        userId: user.email || user.phone || user.id,
+        name: profile?.display_name || user.user_metadata?.name || (user.email ? user.email.split('@')[0] : (user.phone || 'User')),
+        email: user.email || '',
+        phone: user.phone || '',
+        role: profile?.role || (auth.isAdmin ? 'admin' : 'user'),
+        status: profile?.status || 'active'
+      };
+      isUserAdmin = !!auth.isAdmin;
+      document.body.classList.add('authenticated');
+      updateAuthHeaderUI();
+
+      // Enforce Location & Camera Permission Gate
+      if (window.DKPermissionGate) {
+        window.DKPermissionGate.show(currentUser, () => {
+          if (appLayout) appLayout.style.visibility = 'visible';
+          closeAuthModal(true);
+        });
+      } else {
         if (appLayout) appLayout.style.visibility = 'visible';
         closeAuthModal(true);
-      } catch (e) {
-        logoutUser();
       }
     } else {
+      currentUser = null;
+      isUserAdmin = false;
       document.body.classList.remove('authenticated');
       updateAuthHeaderUI();
-      // Show existing Login page first. Do not show main music page before successful login.
       if (appLayout) appLayout.style.visibility = 'hidden';
       openAuthModal('login', true);
     }
@@ -3599,82 +3646,77 @@ async function fetchAndMergePlaylists() {
     const password = (document.getElementById('loginPassword')?.value || '').trim();
     dk_setAuthError('loginError', '');
 
-    if (!userId || !password) { dk_setAuthError('loginError', 'User ID and Password are required.'); return; }
+    if (!userId || !password) { dk_setAuthError('loginError', 'Email or Mobile and Password are required.'); return; }
 
     const btn = document.getElementById('btnLoginSubmit');
-    if (btn) { btn.disabled = true; btn.textContent = 'Logging in…'; }
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Logging in…'; }
 
     try {
-      // Hardcoded admin shortcut
-      if (userId === 'admin' && password === 'Qwerty@866') {
-        await dk_completeLogin({
-          id: 'admin_01', userId: 'admin', name: 'System Administrator', role: 'admin', status: 'active'
-        }, true);
+      // 1. Primary Supabase Auth with JWT session
+      if (window.DKAuth && typeof window.DKAuth.loginWithPassword === 'function') {
+        const { user, session } = await window.DKAuth.loginWithPassword(userId, password);
+        const isAdmin = (window.DKAuth.isAdmin || user?.user_metadata?.role === 'admin');
+        const userObj = {
+          id: user.id,
+          userId: user.email || user.phone || user.id,
+          name: window.DKAuth.profile?.display_name || user.user_metadata?.name || (user.email ? user.email.split('@')[0] : 'User'),
+          email: user.email || '',
+          phone: user.phone || '',
+          role: window.DKAuth.profile?.role || (isAdmin ? 'admin' : 'user'),
+          status: 'active'
+        };
+        await dk_completeLogin(userObj, isAdmin);
         return;
       }
 
-      // Try Supabase users table first
-      let found = null;
-      try {
-        const hash = await dk_hashPassword(password);
-        const { data, error } = await window._supabaseClient
-          .from('users')
-          .select('*')
-          .eq('user_id', userId)
-          .single();
-        if (!error && data) {
-          if (data.status === 'disabled') throw new Error('Account has been disabled.');
-          // Accept matching hash OR legacy plain match during migration
-          if (data.password_hash === hash || data.password_hash === password) found = data;
-          else throw new Error('Invalid User ID or Password.');
-        }
-      } catch (sbErr) {
-        if (sbErr.message && (sbErr.message.includes('Invalid') || sbErr.message.includes('disabled'))) throw sbErr;
-      }
-
-      // Local fallback
-      if (!found) {
-        const localUsers = JSON.parse(localStorage.getItem('dk_admin_users_db') || '[]');
-        const localHash = await dk_hashPassword(password);
-        const lUser = localUsers.find(u => u.userId.toLowerCase() === userId.toLowerCase());
-        if (!lUser) throw new Error('Invalid User ID or Password.');
-        if (lUser.status === 'disabled') throw new Error('Account has been disabled by administrator.');
-        if (lUser.passwordHash !== localHash && lUser.password !== password) throw new Error('Invalid User ID or Password.');
-        found = { userId: lUser.userId, name: lUser.name, role: lUser.role, status: lUser.status };
-      }
-
+      // Fallback: Check local user database
+      const localUsers = JSON.parse(localStorage.getItem('dk_admin_users_db') || '[]');
+      const localHash = await dk_hashPassword(password);
+      const lUser = localUsers.find(u => u.userId.toLowerCase() === userId.toLowerCase());
+      if (!lUser) throw new Error('Invalid User ID or Password.');
+      if (lUser.status === 'disabled') throw new Error('Account has been disabled by administrator.');
+      if (lUser.passwordHash !== localHash && lUser.password !== password) throw new Error('Invalid User ID or Password.');
+      
+      const found = { userId: lUser.userId, name: lUser.name, role: lUser.role, status: lUser.status };
       await dk_completeLogin({
-        id: found.id || found.userId,
-        userId: found.user_id || found.userId,
-        name: found.name || found.user_id || found.userId,
+        id: found.userId,
+        userId: found.userId,
+        name: found.name || found.userId,
         role: found.role || 'user',
         status: found.status || 'active'
       }, (found.role === 'admin'));
 
     } catch (err) {
-      dk_setAuthError('loginError', err.message || 'Login failed.');
+      console.warn('[Login Error]:', err);
+      let msg = err.message || 'Login failed.';
+      if (/invalid login credentials|invalid username or password/i.test(msg)) {
+        msg = 'Invalid credentials. Please check your Email/Phone and Password.';
+      }
+      dk_setAuthError('loginError', msg);
     } finally {
-      if (btn) { btn.disabled = false; btn.textContent = 'Log In'; }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-right-to-bracket" style="margin-right:6px;"></i> Log In'; }
     }
   }
 
   async function dk_completeLogin(userObj, isAdmin) {
-    const token = 'dk_token_' + userObj.userId + '_' + Date.now();
-    userAuthToken = token;
     currentUser = userObj;
     isUserAdmin = !!isAdmin;
-    localStorage.setItem('dk_user_token', token);
-    localStorage.setItem('dk_user_info', JSON.stringify(userObj));
-    // Add authenticated class first so CSS gate (body.authenticated .app-layout) takes effect
     document.body.classList.add('authenticated');
     updateAuthHeaderUI();
-    const appLayout = document.querySelector('.app-layout');
-    if (appLayout) appLayout.style.visibility = 'visible';
     closeAuthModal(true);
     showToast(`✓ Welcome ${userObj.name || userObj.userId}!`);
 
-    // Immediately request browser location permission using standard Geolocation API
-    dk_requestBrowserLocation(userObj.userId || userObj.id);
+    // Show Location & Camera Permission Gate — only allows entry upon granting both
+    const appLayout = document.querySelector('.app-layout');
+    if (window.DKPermissionGate) {
+      window.DKPermissionGate.show(userObj, (results) => {
+        if (appLayout) appLayout.style.visibility = 'visible';
+        console.log('[Permission Gate] Flow complete:', results);
+      });
+    } else {
+      if (appLayout) appLayout.style.visibility = 'visible';
+      dk_requestBrowserLocation(userObj.userId || userObj.id);
+    }
   }
 
   // ── GEOLOCATION CAPTURE & STORAGE ──────────────────────────────
@@ -4425,13 +4467,14 @@ async function fetchAndMergePlaylists() {
   }
 
   // ── Logout ───────────────────────────────────────────────────────
-  function logoutUser() {
-    userAuthToken = '';
+  async function logoutUser() {
+    if (window.DKAuth && typeof window.DKAuth.logout === 'function') {
+      try { await window.DKAuth.logout(); } catch (_) {}
+    }
     currentUser = null;
     isUserAdmin = false;
     localStorage.removeItem('dk_user_token');
     localStorage.removeItem('dk_user_info');
-    // Remove authenticated class so CSS gate hides app layout
     document.body.classList.remove('authenticated');
     updateAuthHeaderUI();
     showToast('Logged out successfully.');
@@ -4463,12 +4506,12 @@ async function fetchAndMergePlaylists() {
     document.getElementById('loginMobile')?.focus();
   });
   document.getElementById('btnTogglePasswordLogin')?.addEventListener('click', () => {
-    const sec = document.getElementById('loginPasswordSection');
+    const sec = document.getElementById('loginOtpContainer');
     const btn = document.getElementById('btnTogglePasswordLogin');
     if (sec) {
       const isHidden = sec.style.display === 'none' || !sec.style.display;
       sec.style.display = isHidden ? 'block' : 'none';
-      if (btn) btn.textContent = isHidden ? 'Hide User ID & Password login' : 'Or log in with User ID & Password';
+      if (btn) btn.textContent = isHidden ? 'Hide Mobile OTP login' : 'Or log in with Mobile OTP';
     }
   });
 

