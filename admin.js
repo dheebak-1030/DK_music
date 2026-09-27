@@ -1596,5 +1596,320 @@ adminGlobalSearch?.addEventListener('input', (e) => {
     renderSongsTable(filteredSongs);
 });
 
+// ── 6. BULK SONGS UPLOAD ENGINE ─────────────────────────────
+let bulkAudioQueue = [];
+
+const btnOpenBulkUpload = document.getElementById('btnOpenBulkUpload');
+const bulkUploadCard = document.getElementById('bulkUploadCard');
+const btnCloseBulkUpload = document.getElementById('btnCloseBulkUpload');
+const bulkSongsFiles = document.getElementById('bulkSongsFiles');
+const btnChooseFiles = document.getElementById('btnChooseFiles');
+const bulkSongsFolder = document.getElementById('bulkSongsFolder');
+const btnChooseFolder = document.getElementById('btnChooseFolder');
+const bulkFilesQueueWrap = document.getElementById('bulkFilesQueueWrap');
+const bulkQueueCount = document.getElementById('bulkQueueCount');
+const btnClearBulkQueue = document.getElementById('btnClearBulkQueue');
+const bulkQueueList = document.getElementById('bulkQueueList');
+const bulkProgressSection = document.getElementById('bulkProgressSection');
+const bulkProgressLabel = document.getElementById('bulkProgressLabel');
+const bulkProgressPercent = document.getElementById('bulkProgressPercent');
+const bulkProgressBar = document.getElementById('bulkProgressBar');
+const bulkFailedWrap = document.getElementById('bulkFailedWrap');
+const bulkFailedList = document.getElementById('bulkFailedList');
+const btnBulkUploadAll = document.getElementById('btnBulkUploadAll');
+const bulkStatusText = document.getElementById('bulkStatusText');
+
+btnOpenBulkUpload?.addEventListener('click', () => {
+    if (bulkUploadCard) {
+        bulkUploadCard.style.display = bulkUploadCard.style.display === 'none' ? 'block' : 'none';
+        if (bulkUploadCard.style.display === 'block') {
+            bulkUploadCard.scrollIntoView({ behavior: 'smooth' });
+        }
+    }
+});
+
+btnCloseBulkUpload?.addEventListener('click', () => {
+    if (bulkUploadCard) bulkUploadCard.style.display = 'none';
+});
+
+btnChooseFiles?.addEventListener('click', () => bulkSongsFiles?.click());
+btnChooseFolder?.addEventListener('click', () => bulkSongsFolder?.click());
+
+function handleBulkFilesSelected(files) {
+    if (!files || !files.length) return;
+    const audioExts = ['.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.webm'];
+    const validFiles = Array.from(files).filter(f => {
+        const lower = f.name.toLowerCase();
+        return audioExts.some(ext => lower.endsWith(ext)) || (f.type && f.type.startsWith('audio/'));
+    });
+
+    if (!validFiles.length) {
+        showAdminToast('No valid audio files found in selection.', true);
+        return;
+    }
+
+    validFiles.forEach(f => {
+        const exists = bulkAudioQueue.some(q => q.name === f.name && q.size === f.size);
+        if (!exists) bulkAudioQueue.push(f);
+    });
+
+    renderBulkQueueUI();
+}
+
+bulkSongsFiles?.addEventListener('change', (e) => {
+    handleBulkFilesSelected(e.target.files);
+    e.target.value = '';
+});
+
+bulkSongsFolder?.addEventListener('change', (e) => {
+    handleBulkFilesSelected(e.target.files);
+    e.target.value = '';
+});
+
+btnClearBulkQueue?.addEventListener('click', () => {
+    bulkAudioQueue = [];
+    renderBulkQueueUI();
+});
+
+function renderBulkQueueUI() {
+    if (!bulkFilesQueueWrap) return;
+    if (!bulkAudioQueue.length) {
+        bulkFilesQueueWrap.style.display = 'none';
+        if (btnBulkUploadAll) {
+            btnBulkUploadAll.disabled = true;
+            btnBulkUploadAll.style.opacity = '0.5';
+            btnBulkUploadAll.style.cursor = 'not-allowed';
+        }
+        if (bulkStatusText) bulkStatusText.textContent = '';
+        return;
+    }
+
+    bulkFilesQueueWrap.style.display = 'block';
+    if (bulkQueueCount) bulkQueueCount.textContent = `${bulkAudioQueue.length} audio file(s) selected`;
+    if (bulkQueueList) {
+        bulkQueueList.innerHTML = bulkAudioQueue.map(f => `
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 0; border-bottom:1px solid #1f2833;">
+                <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:80%; color:#e2e8f0;">
+                    <i class="fas fa-file-audio" style="color:#45f3ff; margin-right:6px;"></i> ${f.name}
+                </span>
+                <span style="color:#64748b; font-size:0.75rem;">${(f.size / (1024 * 1024)).toFixed(1)} MB</span>
+            </div>
+        `).join('');
+    }
+
+    if (btnBulkUploadAll) {
+        btnBulkUploadAll.disabled = false;
+        btnBulkUploadAll.style.opacity = '1';
+        btnBulkUploadAll.style.cursor = 'pointer';
+    }
+}
+
+/**
+ * Extract audio metadata using jsmediatags & HTML5 Audio
+ * Falls back to filename as Title and leaves unavailable fields empty (never invents metadata)
+ */
+async function extractAudioFileMetadata(file) {
+    const rawName = file.name.replace(/\.[^/.]+$/, '').trim();
+    let meta = {
+        title: rawName,
+        artist: '',
+        album: '',
+        genre: '',
+        duration: 0,
+        coverBlob: null
+    };
+
+    // 1. Duration extraction
+    try {
+        const durPromise = new Promise(resolve => {
+            const a = new Audio();
+            const u = URL.createObjectURL(file);
+            a.src = u;
+            a.onloadedmetadata = () => {
+                meta.duration = Math.round(a.duration) || 0;
+                URL.revokeObjectURL(u);
+                resolve();
+            };
+            a.onerror = () => { URL.revokeObjectURL(u); resolve(); };
+            setTimeout(() => { URL.revokeObjectURL(u); resolve(); }, 3000);
+        });
+        await durPromise;
+    } catch (_) {}
+
+    // 2. ID3 tag extraction via jsmediatags if loaded
+    if (window.jsmediatags && typeof window.jsmediatags.read === 'function') {
+        try {
+            await new Promise(resolve => {
+                window.jsmediatags.read(file, {
+                    onSuccess: tag => {
+                        const t = tag.tags || {};
+                        if (t.title && String(t.title).trim()) meta.title = String(t.title).trim();
+                        if (t.artist && String(t.artist).trim()) meta.artist = String(t.artist).trim();
+                        if (t.album && String(t.album).trim()) meta.album = String(t.album).trim();
+                        if (t.genre && String(t.genre).trim()) meta.genre = String(t.genre).trim();
+                        if (t.picture) {
+                            try {
+                                const { data, format } = t.picture;
+                                const bytes = new Uint8Array(data);
+                                meta.coverBlob = new Blob([bytes], { type: format });
+                            } catch (_) {}
+                        }
+                        resolve();
+                    },
+                    onError: () => resolve()
+                });
+                setTimeout(resolve, 4000);
+            });
+        } catch (_) {}
+    }
+
+    return meta;
+}
+
+/**
+ * Check if song already exists in catalog
+ */
+function isDuplicateSong(title, artist) {
+    const normT = (title || '').toLowerCase().trim();
+    const normA = (artist || '').toLowerCase().trim();
+    return songsData.some(s => {
+        const sT = (s.title || '').toLowerCase().trim();
+        const sA = (s.artist || '').toLowerCase().trim();
+        return sT === normT && (normA ? sA === normA : true);
+    });
+}
+
+// ONE "Upload All" click handler
+btnBulkUploadAll?.addEventListener('click', async () => {
+    if (!bulkAudioQueue.length) return;
+
+    btnBulkUploadAll.disabled = true;
+    btnBulkUploadAll.style.opacity = '0.5';
+    btnBulkUploadAll.style.cursor = 'not-allowed';
+    btnBulkUploadAll.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Uploading...';
+
+    if (bulkProgressSection) bulkProgressSection.style.display = 'block';
+    if (bulkFailedWrap) bulkFailedWrap.style.display = 'none';
+    if (bulkFailedList) bulkFailedList.innerHTML = '';
+
+    const total = bulkAudioQueue.length;
+    let uploadedCount = 0;
+    let skippedCount = 0;
+    const failed = [];
+
+    for (let i = 0; i < total; i++) {
+        const file = bulkAudioQueue[i];
+        const pct = Math.round(((i) / total) * 100);
+        if (bulkProgressBar) bulkProgressBar.style.width = pct + '%';
+        if (bulkProgressPercent) bulkProgressPercent.textContent = pct + '%';
+        if (bulkProgressLabel) bulkProgressLabel.textContent = `[${i + 1}/${total}] Processing "${file.name}"...`;
+
+        try {
+            // Extract audio metadata
+            const meta = await extractAudioFileMetadata(file);
+
+            // Duplicate prevention
+            if (isDuplicateSong(meta.title, meta.artist)) {
+                skippedCount++;
+                console.log(`[BulkUpload] Duplicate skipped: ${meta.title}`);
+                continue;
+            }
+
+            const songId = 'song_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
+
+            // 1. Upload audio using existing storage engine
+            let audioUrl = '';
+            if (window.DK_CloudStorage) {
+                audioUrl = await window.DK_CloudStorage.uploadAudioFile(file, songId);
+            } else {
+                throw new Error('Storage engine not initialized');
+            }
+
+            if (!audioUrl) throw new Error('Failed to retrieve uploaded audio URL');
+
+            // 2. Upload cover art if extracted from audio metadata
+            let coverUrl = '';
+            if (meta.coverBlob && window.DK_CloudStorage) {
+                try {
+                    const coverFile = new File([meta.coverBlob], `${songId}_cover.jpg`, { type: 'image/jpeg' });
+                    coverUrl = await window.DK_CloudStorage.uploadCoverImage(coverFile, songId);
+                } catch (cErr) {
+                    console.warn('[BulkUpload] Cover upload notice:', cErr);
+                }
+            }
+
+            // 3. Save to Supabase songs table & local storage
+            const songRecord = {
+                id: songId,
+                title: meta.title,
+                artist: meta.artist || '',
+                album: meta.album || '',
+                genre: meta.genre || '',
+                duration: meta.duration || 0,
+                cover_url: coverUrl || '',
+                audio_url: audioUrl,
+                file_url: audioUrl,
+                downloadable: true,
+                created_at: new Date().toISOString()
+            };
+
+            // Save to Supabase songs table
+            if (window.DK_CloudStorage) {
+                await window.DK_CloudStorage.upsertSongToDB(songRecord).catch(console.warn);
+            }
+
+            // Save to local admin catalog
+            try {
+                await adminFetch('/api/admin/songs', 'POST', songRecord).catch(() => {});
+            } catch (_) {}
+
+            uploadedCount++;
+        } catch (err) {
+            console.error('[BulkUpload Error]:', file.name, err);
+            failed.push({ name: file.name, error: err.message || 'Upload failed' });
+        }
+    }
+
+    // Complete progress
+    if (bulkProgressBar) bulkProgressBar.style.width = '100%';
+    if (bulkProgressPercent) bulkProgressPercent.textContent = '100%';
+    if (bulkProgressLabel) bulkProgressLabel.textContent = 'Bulk upload finished!';
+
+    // Show failed files if any
+    if (failed.length && bulkFailedWrap && bulkFailedList) {
+        bulkFailedWrap.style.display = 'block';
+        bulkFailedList.innerHTML = failed.map(f => `<li><strong>${f.name}</strong>: ${f.error}</li>`).join('');
+    }
+
+    if (bulkStatusText) {
+        bulkStatusText.textContent = `✓ ${uploadedCount} uploaded, ${skippedCount} duplicate(s) skipped, ${failed.length} failed.`;
+    }
+
+    showAdminToast(`✓ Bulk Upload: ${uploadedCount} added, ${skippedCount} skipped, ${failed.length} failed.`);
+
+    // Reset button
+    btnBulkUploadAll.disabled = false;
+    btnBulkUploadAll.style.opacity = '1';
+    btnBulkUploadAll.style.cursor = 'pointer';
+    btnBulkUploadAll.innerHTML = '<i class="fas fa-check"></i> Upload Completed';
+
+    // Clear queue
+    bulkAudioQueue = [];
+    renderBulkQueueUI();
+
+    // Refresh songs table in admin
+    await fetchSongs();
+
+    // Broadcast track update so Home -> All Tracks refreshes automatically
+    try {
+        localStorage.setItem('dk_songs_updated', String(Date.now()));
+        window.dispatchEvent(new Event('storage'));
+        if (window.opener && typeof window.opener.fetchSongs === 'function') {
+            window.opener.fetchSongs();
+        }
+    } catch (_) {}
+});
+
 // Initialize on Load
 checkAdminAuth();
+

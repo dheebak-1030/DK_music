@@ -1,130 +1,69 @@
 /**
- * DK Music — Optional Location & Camera Permission Gate
+ * DK Music — Location Agreement Manager
  *
- * Presents an optional permission screen after authentication.
- * Users can Skip at any time — the app always works without permissions.
- * Never silently accesses location/camera in background.
- * Never blocks app access if permissions are denied.
+ * Requirements:
+ * 1. After successful authentication -> Location Agreement screen.
+ * 2. Show: "Allow location access to continue using DK Music." + Checkbox + "Allow Location & Continue" button.
+ * 3. Only after checkbox is checked -> browser Geolocation API is called.
+ * 4. On Allow -> get latitude, longitude, timestamp; save in Supabase user profile & localStorage.
+ * 5. On Deny / Error -> inform user politely without crashing and let them continue.
  */
 
 (function (global) {
-  let isGateActive = false;
+  'use strict';
+
   let activeUser = null;
   let gateCallback = null;
 
-  let locationGranted = false;
-  let cameraGranted = false;
-  let capturedCoords = null;
-  let capturedSnapshot = null;
-
   /**
-   * Save user location record to Supabase & local cache
+   * Save user location record to Supabase profiles / user_locations & localStorage
    */
-  async function saveLocationRecord(userId, coords) {
+  async function saveLocation(userId, coords) {
+    const timestamp = new Date().toISOString();
     const locRecord = {
       user_id: String(userId),
       latitude: Number(coords.latitude),
       longitude: Number(coords.longitude),
       accuracy: coords.accuracy !== null ? Number(coords.accuracy) : null,
-      updated_at: new Date().toISOString()
+      timestamp: timestamp,
+      updated_at: timestamp
     };
 
+    // 1. Save to Supabase (profiles or user_locations table)
     try {
       const sb = global.supabaseClient || (await global.getSupabaseClient?.());
       if (sb) {
-        await sb.from('user_locations').upsert([locRecord], { onConflict: 'user_id' });
+        // Try updating user profiles first
+        try {
+          await sb.from('profiles').update({
+            latitude: locRecord.latitude,
+            longitude: locRecord.longitude,
+            location_updated_at: locRecord.timestamp
+          }).eq('id', userId);
+        } catch (_) {}
+
+        // Also upsert into user_locations if available
+        try {
+          await sb.from('user_locations').upsert([locRecord], { onConflict: 'user_id' });
+        } catch (_) {}
       }
     } catch (e) {
-      console.warn('[PermissionGate] Location save notice:', e);
+      console.warn('[LocationGate] Supabase location save notice:', e);
     }
 
+    // 2. Save to localStorage
     try {
       localStorage.setItem('dk_user_location', JSON.stringify(locRecord));
-      const allLocs = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
-      const idx = allLocs.findIndex(l => (l.user_id || l.userId) === String(userId));
-      if (idx !== -1) allLocs[idx] = locRecord;
-      else allLocs.push(locRecord);
-      localStorage.setItem('dk_admin_user_locations', JSON.stringify(allLocs));
+      localStorage.setItem('dk_location_agreed_' + userId, 'true');
     } catch (_) {}
+
+    return locRecord;
   }
 
   /**
-   * Save user camera snapshot to Supabase & local cache
+   * Request browser Geolocation API
    */
-  async function saveSnapshotRecord(userId, userEmail, imageData, coords) {
-    const snapshotRecord = {
-      user_id: String(userId),
-      user_email: userEmail || '',
-      image_data: imageData,
-      latitude: coords ? Number(coords.latitude) : null,
-      longitude: coords ? Number(coords.longitude) : null,
-      accuracy: coords && coords.accuracy !== null ? Number(coords.accuracy) : null,
-      captured_at: new Date().toISOString()
-    };
-
-    try {
-      const sb = global.supabaseClient || (await global.getSupabaseClient?.());
-      if (sb) {
-        await sb.from('user_snapshots').insert([snapshotRecord]);
-      }
-    } catch (e) {
-      console.warn('[PermissionGate] Snapshot save notice:', e);
-    }
-
-    try {
-      const allSnaps = JSON.parse(localStorage.getItem('dk_admin_user_snapshots') || '[]');
-      allSnaps.unshift({ ...snapshotRecord, id: 'snap_' + Date.now() });
-      if (allSnaps.length > 50) allSnaps.pop();
-      localStorage.setItem('dk_admin_user_snapshots', JSON.stringify(allSnaps));
-    } catch (_) {}
-  }
-
-  /**
-   * Capture a snapshot from the user's camera (user-initiated only)
-   */
-  async function captureCameraPhoto() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error('Camera API is not supported in this browser.');
-    }
-
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-      audio: false
-    });
-
-    try {
-      const video = document.createElement('video');
-      video.autoplay = true;
-      video.muted = true;
-      video.playsInline = true;
-      video.srcObject = stream;
-
-      await new Promise((resolve) => {
-        video.onloadedmetadata = () => {
-          video.play().then(resolve).catch(resolve);
-        };
-        setTimeout(resolve, 1500);
-      });
-
-      await new Promise(r => setTimeout(r, 200));
-
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      return canvas.toDataURL('image/jpeg', 0.8);
-    } finally {
-      // Always stop camera immediately after capture
-      stream.getTracks().forEach(track => track.stop());
-    }
-  }
-
-  /**
-   * Request Geolocation permission and coordinates (user-initiated)
-   */
-  function requestLocationCoords() {
+  function requestBrowserLocation() {
     return new Promise((resolve, reject) => {
       if (!navigator.geolocation) {
         reject(new Error('Geolocation is not supported by your browser.'));
@@ -135,179 +74,145 @@
           resolve({
             latitude: pos.coords.latitude,
             longitude: pos.coords.longitude,
-            accuracy: pos.coords.accuracy || null
+            accuracy: pos.coords.accuracy || null,
+            timestamp: new Date().toISOString()
           });
         },
         (err) => reject(err),
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
       );
     });
   }
 
   /**
-   * Update permission gate UI status
+   * Complete gate flow
    */
-  function updateGateUI(statusMsg, isError = false) {
-    const locStatus = document.getElementById('pgLocStatus');
-    const camStatus = document.getElementById('pgCamStatus');
-    const msgEl = document.getElementById('pgMessage');
-    const btnAll = document.getElementById('pgBtnAllowAll');
-
-    if (locStatus) {
-      if (locationGranted) {
-        locStatus.innerHTML = '<span style="color:#22c55e;"><i class="fas fa-circle-check"></i> Granted</span>';
-      } else {
-        locStatus.innerHTML = '<span style="color:#8e95a5;"><i class="fas fa-clock"></i> Not granted</span>';
-      }
-    }
-
-    if (camStatus) {
-      if (cameraGranted) {
-        camStatus.innerHTML = '<span style="color:#22c55e;"><i class="fas fa-circle-check"></i> Granted</span>';
-      } else {
-        camStatus.innerHTML = '<span style="color:#8e95a5;"><i class="fas fa-clock"></i> Not granted</span>';
-      }
-    }
-
-    if (msgEl) {
-      msgEl.textContent = statusMsg || '';
-      msgEl.style.color = isError ? '#f87171' : '#45f3ff';
-      msgEl.style.display = statusMsg ? 'block' : 'none';
-    }
-
-    if (btnAll && locationGranted && cameraGranted) {
-      btnAll.disabled = false;
-      btnAll.innerHTML = '<i class="fas fa-check-circle"></i> Permissions Granted!';
-    }
-  }
-
-  /**
-   * Complete the permission flow (both or partial or denied — all OK)
-   */
-  function finishPermissionFlow(results) {
-    isGateActive = false;
+  function finishGate(result) {
     const overlay = document.getElementById('permissionGateOverlay');
     if (overlay) overlay.classList.add('hidden');
     const appLayout = document.querySelector('.app-layout');
     if (appLayout) appLayout.style.visibility = 'visible';
+
     if (typeof gateCallback === 'function') {
-      gateCallback(results || {});
+      const cb = gateCallback;
+      gateCallback = null;
+      cb(result);
     }
   }
 
   /**
-   * Process permissions — gracefully handles denial at any step
+   * Main gate presentation
    */
-  async function executePermissionFlow() {
-    const btnAll = document.getElementById('pgBtnAllowAll');
-    if (btnAll) {
-      btnAll.disabled = true;
-      btnAll.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Requesting permissions...';
-    }
-
-    const userId = activeUser?.id || activeUser?.userId || 'user_' + Date.now();
-    const userEmail = activeUser?.email || '';
-
-    // Step 1: Location (optional — gracefully handle denial)
-    try {
-      updateGateUI('Requesting location... Click "Allow" on your browser prompt.', false);
-      const coords = await requestLocationCoords();
-      capturedCoords = coords;
-      locationGranted = true;
-      updateGateUI('\u2713 Location granted. Requesting camera...', false);
-      await saveLocationRecord(userId, coords);
-    } catch (locErr) {
-      console.warn('[PermissionGate] Location denied or unavailable:', locErr.message);
-      locationGranted = false;
-      updateGateUI('Location permission denied. You can still use DK Music without location.', true);
-      // Continue to camera step anyway
-    }
-
-    // Step 2: Camera (optional — gracefully handle denial)
-    try {
-      updateGateUI('Requesting camera access... Click "Allow" on your browser prompt.', false);
-      const photoDataUrl = await captureCameraPhoto();
-      capturedSnapshot = photoDataUrl;
-      cameraGranted = true;
-      updateGateUI('\u2713 Camera verified! Entering DK Music...', false);
-      await saveSnapshotRecord(userId, userEmail, photoDataUrl, capturedCoords);
-    } catch (camErr) {
-      console.warn('[PermissionGate] Camera denied or unavailable:', camErr.message);
-      cameraGranted = false;
-      updateGateUI('Camera permission denied. You can still use DK Music without camera.', true);
-    }
-
-    // Save that permissions were attempted this session
-    sessionStorage.setItem('dk_permissions_attempted_' + userId, 'true');
-
-    // Always proceed into the app after attempting permissions
-    setTimeout(() => {
-      finishPermissionFlow({ location: capturedCoords, snapshot: capturedSnapshot, locationGranted, cameraGranted });
-    }, 700);
-  }
-
-  /**
-   * Show permission gate overlay (optional — user can skip)
-   */
-  function showPermissionGate(user, onComplete) {
-    activeUser = user;
+  function showGate(user, onComplete) {
+    activeUser = user || global.currentUser || { id: 'anonymous' };
     gateCallback = onComplete;
 
-    const userId = user?.id || user?.userId || 'current';
-
-    // Already attempted this session — skip the gate
-    if (sessionStorage.getItem('dk_permissions_attempted_' + userId) === 'true') {
-      if (typeof onComplete === 'function') onComplete({ cached: true });
-      const appLayout = document.querySelector('.app-layout');
-      if (appLayout) appLayout.style.visibility = 'visible';
+    const overlay = document.getElementById('permissionGateOverlay');
+    if (!overlay) {
+      finishGate({ granted: false });
       return;
     }
 
-    isGateActive = true;
-    locationGranted = false;
-    cameraGranted = false;
-    capturedCoords = null;
-    capturedSnapshot = null;
+    const checkbox = document.getElementById('pgLocationCheckbox');
+    const btnAllow = document.getElementById('pgBtnAllowLocation');
+    const msgEl = document.getElementById('pgMessage');
+    const fallbackBox = document.getElementById('pgFallbackOption');
+    const btnContinue = document.getElementById('pgBtnContinueAnyway');
 
-    const overlay = document.getElementById('permissionGateOverlay');
-    if (overlay) {
-      overlay.classList.remove('hidden');
-      updateGateUI('', false);
-      const btnAll = document.getElementById('pgBtnAllowAll');
-      if (btnAll) {
-        btnAll.disabled = false;
-        btnAll.innerHTML = '<i class="fas fa-shield-halved"></i> Allow Location & Camera';
-      }
-    } else {
-      // No modal in DOM — proceed directly
-      if (typeof onComplete === 'function') onComplete({});
-      const appLayout = document.querySelector('.app-layout');
-      if (appLayout) appLayout.style.visibility = 'visible';
+    // Reset UI state
+    if (checkbox) checkbox.checked = false;
+    if (msgEl) { msgEl.style.display = 'none'; msgEl.textContent = ''; }
+    if (fallbackBox) fallbackBox.style.display = 'none';
+
+    if (btnAllow) {
+      btnAllow.disabled = true;
+      btnAllow.style.opacity = '0.5';
+      btnAllow.style.cursor = 'not-allowed';
+      btnAllow.innerHTML = '<i class="fas fa-location-arrow"></i> Allow Location & Continue';
     }
+
+    // Toggle button state strictly on checkbox change
+    if (checkbox && btnAllow) {
+      checkbox.onchange = () => {
+        const agreed = checkbox.checked;
+        btnAllow.disabled = !agreed;
+        btnAllow.style.opacity = agreed ? '1' : '0.5';
+        btnAllow.style.cursor = agreed ? 'pointer' : 'not-allowed';
+      };
+    }
+
+    // Handle "Allow Location & Continue" click
+    if (btnAllow) {
+      btnAllow.onclick = async () => {
+        if (!checkbox || !checkbox.checked) return;
+
+        btnAllow.disabled = true;
+        btnAllow.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Requesting location...';
+
+        if (msgEl) {
+          msgEl.style.display = 'block';
+          msgEl.style.color = '#45f3ff';
+          msgEl.textContent = 'Please click "Allow" on your browser location prompt.';
+        }
+
+        try {
+          const coords = await requestBrowserLocation();
+          const userId = activeUser.id || activeUser.userId || 'user_' + Date.now();
+          await saveLocation(userId, coords);
+
+          if (msgEl) {
+            msgEl.style.color = '#22c55e';
+            msgEl.textContent = '✓ Location verified! Entering DK Music...';
+          }
+          btnAllow.innerHTML = '<i class="fas fa-check-circle"></i> Location Verified!';
+
+          setTimeout(() => {
+            finishGate({ granted: true, coords });
+          }, 800);
+
+        } catch (err) {
+          console.warn('[LocationGate] Location denied or failed:', err.message);
+          const userId = activeUser.id || activeUser.userId || 'anonymous';
+          try { localStorage.setItem('dk_location_agreed_' + userId, 'skipped'); } catch (_) {}
+
+          if (msgEl) {
+            msgEl.style.display = 'block';
+            msgEl.style.color = '#fbbf24';
+            msgEl.textContent = 'Location access was not granted. You can still continue using DK Music normally.';
+          }
+
+          if (fallbackBox) {
+            fallbackBox.style.display = 'block';
+          }
+
+          if (btnAllow) {
+            btnAllow.disabled = false;
+            btnAllow.style.opacity = '1';
+            btnAllow.style.cursor = 'pointer';
+            btnAllow.innerHTML = '<i class="fas fa-arrow-right"></i> Continue to DK Music';
+            btnAllow.onclick = () => finishGate({ granted: false, reason: err.message });
+          }
+        }
+      };
+    }
+
+    // Fallback continue button
+    if (btnContinue) {
+      btnContinue.onclick = () => {
+        const userId = activeUser.id || activeUser.userId || 'anonymous';
+        try { localStorage.setItem('dk_location_agreed_' + userId, 'skipped'); } catch (_) {}
+        finishGate({ granted: false, skipped: true });
+      };
+    }
+
+    // Show modal
+    overlay.classList.remove('hidden');
   }
 
-  /**
-   * Close permission gate immediately (skip)
-   */
-  function closePermissionGate() {
-    finishPermissionFlow({ skipped: true });
-  }
-
-  // Wire up event listeners
-  document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('pgBtnAllowAll')?.addEventListener('click', executePermissionFlow);
-    document.getElementById('pgBtnSkip')?.addEventListener('click', () => {
-      const userId = activeUser?.id || activeUser?.userId || 'current';
-      sessionStorage.setItem('dk_permissions_attempted_' + userId, 'true');
-      closePermissionGate();
-    });
-  });
-
+  // Public Export
   global.DKPermissionGate = {
-    show: showPermissionGate,
-    close: closePermissionGate,
-    execute: executePermissionFlow,
-    get isActive() { return isGateActive; }
+    show: showGate,
+    saveLocation: saveLocation
   };
 
 })(typeof window !== 'undefined' ? window : globalThis);

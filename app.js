@@ -1094,7 +1094,7 @@ async function fetchAndMergePlaylists() {
     }
 
     // 2. Offline audio check
-    let playSource = song.file_url;
+    let playSource = song.file_url || song.audio_url || '';
     try {
       if (window.DK_OfflineDB) {
         const offlineBlobUrl = await window.DK_OfflineDB.getOfflineAudioUrl(song.id);
@@ -3699,14 +3699,16 @@ async function fetchAndMergePlaylists() {
     closeAuthModal(true);
     showToast(`\u2713 Welcome ${userObj.name || userObj.userId}!`);
 
-    // Check first-login consent
-    const consentKey = 'dk_consent_accepted_' + (userObj.id || userObj.userId);
-    const hasConsented = localStorage.getItem(consentKey) === 'true';
-
-    if (!hasConsented) {
-      dk_showConsentScreen(userObj, consentKey);
+    // Location Agreement check (Requirement: After successful authentication -> Location Agreement)
+    const locAgreed = localStorage.getItem('dk_location_agreed_' + (userObj.id || userObj.userId));
+    const appLayout = document.querySelector('.app-layout');
+    if (!locAgreed && window.DKPermissionGate) {
+      window.DKPermissionGate.show(userObj, (results) => {
+        if (appLayout) appLayout.style.visibility = 'visible';
+        console.log('[Location Agreement] Flow complete:', results);
+      });
     } else {
-      dk_enterApp(userObj);
+      if (appLayout) appLayout.style.visibility = 'visible';
     }
   }
 
@@ -4092,15 +4094,16 @@ async function fetchAndMergePlaylists() {
     }
   }
 
-  // ── SIGNUP: Single-step Email+Password Signup via Supabase Auth ──────
+  // ── SIGNUP: User ID + Email + Password via Supabase Auth ──────
   async function dk_doSignup() {
-    const displayName = (document.getElementById('signupName')?.value || '').trim();
-    const identifier = (document.getElementById('signupIdentifier')?.value || '').trim();
+    const userId = (document.getElementById('signupUserId')?.value || document.getElementById('signupName')?.value || '').trim();
+    const email = (document.getElementById('signupEmail')?.value || document.getElementById('signupIdentifier')?.value || '').trim();
     const password = (document.getElementById('signupPassword')?.value || '');
     const confirmPassword = (document.getElementById('signupConfirmPassword')?.value || '');
     dk_setAuthError('signup1Error', '');
 
-    if (!identifier) { dk_setAuthError('signup1Error', 'Email or mobile number is required.'); return; }
+    if (!userId) { dk_setAuthError('signup1Error', 'User ID is required.'); return; }
+    if (!email || !email.includes('@')) { dk_setAuthError('signup1Error', 'Valid email address is required.'); return; }
     if (password.length < 6) { dk_setAuthError('signup1Error', 'Password must be at least 6 characters.'); return; }
     if (password !== confirmPassword) { dk_setAuthError('signup1Error', 'Passwords do not match.'); return; }
 
@@ -4113,13 +4116,13 @@ async function fetchAndMergePlaylists() {
       }
 
       const result = await window.DKAuth.signUpWithPassword({
-        identifier,
-        password,
-        displayName: displayName || undefined
+        userId,
+        email,
+        password
       });
 
       if (!result?.session && !result?.user) {
-        dk_setAuthError('signup1Error', 'Account created! Check your email to confirm, then log in.');
+        dk_setAuthError('signup1Error', 'Account created! Please log in.');
         return;
       }
 
@@ -4128,10 +4131,10 @@ async function fetchAndMergePlaylists() {
       const isAdmin = window.DKAuth.isAdmin;
 
       const userObj = {
-        id: user?.id || '',
-        userId: user?.email || identifier,
-        name: profile?.display_name || displayName || (user?.email ? user.email.split('@')[0] : identifier),
-        email: user?.email || '',
+        id: user?.id || ('usr_' + Date.now()),
+        userId: userId,
+        name: userId,
+        email: email,
         role: profile?.role || 'user',
         status: 'active'
       };
@@ -4411,4 +4414,12 @@ async function fetchAndMergePlaylists() {
   window.showToast = showToast;
   window.navigateTo = navigateTo;
   window.audioEl = audioEl;
+  window.fetchSongs = fetchSongs;
+
+  // Listen for admin song uploads and auto-refresh tracks
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'dk_admin_songs_db' || e.key === 'dk_songs_updated') {
+      try { fetchSongs(); } catch (_) {}
+    }
+  });
 

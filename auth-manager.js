@@ -186,27 +186,47 @@
     },
 
     /**
-     * Helper to resolve any identifier (email, phone, username) to standard Supabase Auth email
+     * Helper to resolve any identifier (email, username/User ID) to standard Supabase Auth email
      */
-    resolveEmail: function (identifier) {
+    resolveEmail: async function (identifier) {
       const clean = String(identifier || '').trim();
       if (!clean) return '';
       if (clean.includes('@')) return clean.toLowerCase();
       if (clean.toLowerCase() === 'admin') return 'admin@dkmusic.com';
+
+      // Check cached mapping in localStorage
+      const cached = localStorage.getItem('dk_user_id_map_' + clean.toLowerCase());
+      if (cached && cached.includes('@')) return cached.toLowerCase();
+
+      // Check Supabase profiles table for matching user_id
+      try {
+        const sb = global.supabaseClient || (await global.getSupabaseClient?.());
+        if (sb) {
+          const { data } = await sb.from('profiles').select('email').ilike('user_id', clean).maybeSingle();
+          if (data && data.email) {
+            localStorage.setItem('dk_user_id_map_' + clean.toLowerCase(), data.email);
+            return data.email.toLowerCase();
+          }
+        }
+      } catch (_) {}
+
       const safe = clean.replace(/[^\w]/g, '').toLowerCase();
       return safe + '@dkmusic.app';
     },
 
     /**
-     * Standard Login with Password (Email, Mobile, or User ID)
-     * Issues real Supabase JWT session tokens without requiring SMS provider
+     * Standard Login with Password (Email or User ID)
+     * Issues real Supabase JWT session tokens
      */
     loginWithPassword: async function (identifier, password) {
       const sb = global.supabaseClient || (await global.getSupabaseClient?.());
       if (!sb || !sb.auth) throw new Error('Supabase Auth client is not initialized.');
 
       const cleanId = String(identifier).trim();
-      const resolvedEmail = DKAuth.resolveEmail(cleanId);
+      if (!cleanId) throw new Error('Email or User ID is required.');
+      if (!password) throw new Error('Password is required.');
+
+      const resolvedEmail = await DKAuth.resolveEmail(cleanId);
 
       // 1. Try with resolved email
       try {
@@ -227,68 +247,112 @@
         }
       }
 
-      // 2. If it was a phone number, try phone auth directly as fallback if enabled
-      if (!cleanId.includes('@')) {
-        try {
-          const formatted = formatE164Phone(cleanId);
-          const { data, error } = await sb.auth.signInWithPassword({ phone: formatted, password });
-          if (!error && data?.session) {
-            await applyAuthState(data.session);
-            return data;
-          }
-        } catch (_) {}
-      }
-
-      // 3. If direct email had capital letters or variations, try direct
-      if (cleanId.includes('@') && cleanId !== resolvedEmail) {
-        const { data, error } = await sb.auth.signInWithPassword({ email: cleanId, password });
+      // 2. If cleanId contains '@' and was different from resolved, try direct
+      if (cleanId.includes('@') && cleanId.toLowerCase() !== resolvedEmail) {
+        const { data, error } = await sb.auth.signInWithPassword({ email: cleanId.toLowerCase(), password });
         if (!error && data?.session) {
           await applyAuthState(data.session);
           return data;
         }
       }
 
-      throw new Error('Invalid login credentials. Please check your email/mobile and password.');
+      // 3. Fallback check for synthesized email user@dkmusic.app
+      if (!cleanId.includes('@')) {
+        const fallbackEmail = cleanId.replace(/[^\w]/g, '').toLowerCase() + '@dkmusic.app';
+        if (fallbackEmail !== resolvedEmail) {
+          try {
+            const { data, error } = await sb.auth.signInWithPassword({ email: fallbackEmail, password });
+            if (!error && data?.session) {
+              await applyAuthState(data.session);
+              return data;
+            }
+          } catch (_) {}
+        }
+      }
+
+      throw new Error('Invalid login credentials. Please check your Email/User ID and Password.');
     },
 
     /**
-     * Standard Sign Up with Password (Email, Mobile, or User ID)
-     * Creates real Supabase Auth account and issues JWT session without SMS provider
+     * Standard Sign Up with Password: User ID + Email + Password
+     * Creates real Supabase Auth account and updates profile
      */
-    signUpWithPassword: async function ({ identifier, password, displayName }) {
+    signUpWithPassword: async function ({ userId, email, identifier, password, displayName }) {
       const sb = global.supabaseClient || (await global.getSupabaseClient?.());
       if (!sb || !sb.auth) throw new Error('Supabase Auth client is not initialized.');
 
-      const cleanId = String(identifier).trim();
-      const resolvedEmail = DKAuth.resolveEmail(cleanId);
-      const name = displayName || (cleanId.includes('@') ? cleanId.split('@')[0] : cleanId);
+      const cleanUserId = String(userId || displayName || '').trim();
+      const cleanEmail = String(email || identifier || '').trim().toLowerCase();
 
+      if (!cleanUserId) throw new Error('User ID is required.');
+      if (!cleanEmail || !cleanEmail.includes('@')) throw new Error('Valid email address is required.');
+      if (!password || password.length < 6) throw new Error('Password must be at least 6 characters.');
+
+      // Check if User ID is already taken in profiles table
+      try {
+        const { data: existingUser } = await sb
+          .from('profiles')
+          .select('id, user_id')
+          .ilike('user_id', cleanUserId)
+          .maybeSingle();
+
+        if (existingUser) {
+          throw new Error(`User ID "${cleanUserId}" is already taken. Please choose another.`);
+        }
+      } catch (checkErr) {
+        if (checkErr.message && checkErr.message.includes('already taken')) {
+          throw checkErr;
+        }
+      }
+
+      // Supabase Auth SignUp
       const { data, error } = await sb.auth.signUp({
-        email: resolvedEmail,
+        email: cleanEmail,
         password: password,
         options: {
           data: {
-            display_name: name,
-            phone: cleanId.includes('@') ? '' : cleanId
+            user_id: cleanUserId,
+            display_name: cleanUserId
           }
         }
       });
 
       if (error) {
-        console.warn('[DKAuth] Signup notice:', error.message);
+        if (/already registered|email.*exists/i.test(error.message)) {
+          throw new Error('This email is already registered. Please log in instead.');
+        }
         throw error;
       }
 
-      // If session returned immediately (auto-confirm is default or enabled)
+      // Cache User ID -> Email mapping locally
+      localStorage.setItem('dk_user_id_map_' + cleanUserId.toLowerCase(), cleanEmail);
+
+      // Upsert profile record
+      const uid = data?.user?.id;
+      if (uid) {
+        try {
+          await sb.from('profiles').upsert([{
+            id: uid,
+            user_id: cleanUserId,
+            email: cleanEmail,
+            display_name: cleanUserId,
+            role: 'user',
+            status: 'active',
+            updated_at: new Date().toISOString()
+          }], { onConflict: 'id' });
+        } catch (_) {}
+      }
+
+      // If session returned immediately
       if (data?.session) {
         await applyAuthState(data.session);
         return data;
       }
 
-      // If user created, try immediate sign in
+      // Try automatic sign-in
       try {
         const signInRes = await sb.auth.signInWithPassword({
-          email: resolvedEmail,
+          email: cleanEmail,
           password: password
         });
         if (signInRes.data?.session) {
