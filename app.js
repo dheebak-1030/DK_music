@@ -3691,172 +3691,121 @@ async function dk_doLogin() {
   }
 }
 
-greed && window.DKPermissionGate) {
-  window.DKPermissionGate.show(userObj, (results) => {
-    if (appLayout) appLayout.style.visibility = 'visible';
-    console.log('[Location Agreement] Flow complete:', results);
-  });
-} else {
-  if (appLayout) appLayout.style.visibility = 'visible';
-}
+// ── AUTH COMPLETION, TERMS CONSENT & LOCATION FLOW ───────────────
+async function dk_completeLogin(userObj, isAdmin) {
+  if (!userObj) return;
+  currentUser = userObj;
+  isUserAdmin = !!isAdmin;
+  document.body.classList.add('authenticated');
+  updateAuthHeaderUI();
+  closeAuthModal(true);
+  showToast('\u2713 Welcome ' + (userObj.name || userObj.userId) + '!');
+
+  // Check consent then enter app (or show permission gate)
+  const userId = userObj.id || userObj.userId;
+  const consentKey = 'dk_consent_accepted_' + userId;
+  const hasConsented = localStorage.getItem(consentKey) === 'true';
+
+  let remoteConsent = false;
+  try {
+    const sb = window.supabaseClient;
+    if (sb && userObj.id) {
+      const { data } = await sb.from('profiles').select('consent_accepted').eq('id', userObj.id).maybeSingle();
+      if (data && data.consent_accepted) {
+        remoteConsent = true;
+      }
+    }
+  } catch (_) {}
+
+  if (!hasConsented && !remoteConsent) {
+    dk_showConsentScreen(userObj, consentKey);
+  } else {
+    if (remoteConsent) {
+      try { localStorage.setItem(consentKey, 'true'); } catch (_) {}
+    }
+    dk_enterApp(userObj);
   }
+}
 
 function dk_showConsentScreen(userObj, consentKey) {
-  const mod async function dk_completeLogin(userObj, isAdmin) {
-    currentUser = userObj;
-    isUserAdmin = !!isAdmin;
-    document.body.classList.add('authenticated');
-    updateAuthHeaderUI();
-    closeAuthModal(true);
-    showToast(`\u2713 Welcome ${userObj.name || userObj.userId}!`);
+  const modal = document.getElementById('consentModal');
+  if (!modal) { dk_enterApp(userObj); return; }
+  const cb = document.getElementById('consentCheckbox');
+  const errEl = document.getElementById('consentError');
+  let btn = document.getElementById('btnConsentAccept');
+  if (cb) cb.checked = false;
+  if (errEl) errEl.style.display = 'none';
+  modal.classList.remove('hidden');
 
-    // Location Agreement check (Requirement: After successful authentication -> Location Agreement)
-    const locAgreed = localStorage.getItem('dk_location_agreed_' + (userObj.id || userObj.userId));
-    const appLayout = document.querySelector('.app-layout');
-    if (!locAal = document.getElementById('consentModal');
-    if (!modal) { dk_enterApp(userObj); return; }
-    const cb = document.getElementById('consentCheckbox');
-    const errEl = document.getElementById('consentError');
-    let btn = document.getElementById('btnConsentAccept');
-    if (cb) cb.checked = false;
-    if (errEl) errEl.style.display = 'none';
-    modal.classList.remove('hidden');
-
-    // Clone button to prevent duplicate listeners
-    if (btn) {
-      const newBtn = btn.cloneNode(true);
-      btn.parentNode.replaceChild(newBtn, btn);
-      btn = newBtn;
-      btn.addEventListener('click', async () => {
-        if (!cb || !cb.checked) {
-          if (errEl) errEl.style.display = 'block';
-          return;
-        }
-        if (errEl) errEl.style.display = 'none';
-        modal.classList.add('hidden');
-        localStorage.setItem(consentKey, 'true');
-        // Optionally save to profiles table
-        try {
-          const sb = window.supabaseClient;
-          if (sb && userObj.id) {
-            await sb.from('profiles').update({
-              consent_accepted: true,
-              consent_date: new Date().toISOString()
-            }).eq('id', userObj.id);
-          }
-        } catch (_) { }
-        dk_enterApp(userObj);
-      });
-    }
-  }
-
-  function dk_enterApp(userObj) {
-    const appLayout = document.querySelector('.app-layout');
-    if (window.DKPermissionGate) {
-      window.DKPermissionGate.show(userObj, (results) => {
-        if (appLayout) appLayout.style.visibility = 'visible';
-        console.log('[Permission Gate] Flow complete:', results);
-      });
-    } else {
-      if (appLayout) appLayout.style.visibility = 'visible';
-    }
-  }
-
-  // ── GEOLOCATION CAPTURE & STORAGE ──────────────────────────────
-  let _hasRequestedLocation = false;
-
-  async function dk_requestBrowserLocation(userId) {
-    if (!navigator.geolocation) {
-      console.log('[Geolocation] Geolocation API not supported in this browser.');
-      return;
-    }
-
-    if (_hasRequestedLocation) return;
-    _hasRequestedLocation = true;
-
-    // Show prompt message
-    showToast('📍 Allow location access to enable location-based features.', 5000);
-
-    const geoOptions = {
-      enableHighAccuracy: true,
-      timeout: 10000,
-      maximumAge: 60000
-    };
-
-    // Only collect location after the user grants permission
-    navigator.geolocation.getCurrentPosition(
-      async (pos) => {
-        const latitude = pos.coords.latitude;
-        const longitude = pos.coords.longitude;
-        const accuracy = pos.coords.accuracy || null;
-        const updated_at = new Date().toISOString();
-
-        console.log('[Geolocation] Permission granted:', { latitude, longitude, accuracy });
-        showToast('✓ Location access enabled.');
-
-        await dk_saveUserLocation(userId, latitude, longitude, accuracy, updated_at);
-      },
-      (err) => {
-        // If user selects Block/Deny, DK Music must continue working normally without location
-        console.log('[Geolocation] Permission denied or unavailable:', err.message);
-        if (err.code === err.PERMISSION_DENIED) {
-          console.log('[Geolocation] User denied permission. Continuing standard playback.');
-        }
-      },
-      geoOptions
-    );
-  }
-
-  async function dk_saveUserLocation(userId, latitude, longitude, accuracy, updatedAt) {
-    const locRecord = {
-      user_id: String(userId),
-      latitude: Number(latitude),
-      longitude: Number(longitude),
-      accuracy: accuracy !== null ? Number(accuracy) : null,
-      updated_at: updatedAt || new Date().toISOString()
-    };
-
-    // 1. Save securely in Supabase user_locations table
-    try {
-      const sb = window.supabaseClient || window._supabaseClient;
-      if (sb) {
-        const { error } = await sb
-          .from('user_locations')
-          .upsert([locRecord], { onConflict: 'user_id' });
-        if (!error) {
-          console.log('[Location] Saved to Supabase user_locations table.');
-        } else {
-          console.warn('[Location] Supabase error:', error.message);
-        }
+  // Clone button to prevent duplicate listeners
+  if (btn) {
+    const newBtn = btn.cloneNode(true);
+    btn.parentNode.replaceChild(newBtn, btn);
+    btn = newBtn;
+    btn.addEventListener('click', async () => {
+      if (!cb || !cb.checked) {
+        if (errEl) errEl.style.display = 'block';
+        return;
       }
-    } catch (e) {
-      console.warn('[Location] Supabase error:', e.message);
+      if (errEl) errEl.style.display = 'none';
+      modal.classList.add('hidden');
+      try { localStorage.setItem(consentKey, 'true'); } catch (_) {}
+
+      // Optionally save to profiles table
+      try {
+        const sb = window.supabaseClient;
+        if (sb && userObj.id) {
+          await sb.from('profiles').update({
+            consent_accepted: true,
+            consent_date: new Date().toISOString()
+          }).eq('id', userObj.id);
+        }
+      } catch (_) {}
+
+      dk_enterApp(userObj);
+    });
+  }
+}
+
+function dk_enterApp(userObj) {
+  const appLayout = document.querySelector('.app-layout');
+  const userId = userObj ? (userObj.id || userObj.userId) : '';
+  const locKey = 'dk_location_agreed_' + userId;
+  const locAgreed = userId ? localStorage.getItem(locKey) : null;
+
+  // Returning user who already handled location
+  if (locAgreed) {
+    if (appLayout) {
+      appLayout.style.visibility = 'visible';
+      appLayout.style.opacity = '1';
     }
-
-    // 2. Save locally for client & offline admin access
-    try {
-      localStorage.setItem('dk_user_location', JSON.stringify(locRecord));
-
-      const allLocs = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
-      const idx = allLocs.findIndex(l => (l.user_id || l.userId) === String(userId));
-      if (idx !== -1) {
-        allLocs[idx] = locRecord;
-      } else {
-        allLocs.push(locRecord);
-      }
-      localStorage.setItem('dk_admin_user_locations', JSON.stringify(allLocs));
-
-      if (window.location.protocol !== 'file:') {
-        fetch('/api/user-locations', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(locRecord)
-        }).catch(() => { });
-      }
-    } catch (_) { }
+    return;
   }
 
-  // In-flight guard flags to prevent duplicate OTP requests
+  // First-time user: show permission gate
+  if (window.DKPermissionGate && typeof window.DKPermissionGate.show === 'function') {
+    window.DKPermissionGate.show(userObj, (results) => {
+      if (appLayout) {
+        appLayout.style.visibility = 'visible';
+        appLayout.style.opacity = '1';
+      }
+      console.log('[Permission Gate] Flow complete:', results);
+    });
+  } else {
+    if (appLayout) {
+      appLayout.style.visibility = 'visible';
+      appLayout.style.opacity = '1';
+    }
+  }
+}
+
+async function dk_saveUserLocation(userId, latitude, longitude, accuracy, updatedAt) {
+  if (window.DKPermissionGate && typeof window.DKPermissionGate.saveLocation === 'function') {
+    return await window.DKPermissionGate.saveLocation(userId, { latitude, longitude, accuracy });
+  }
+}
+
+// In-flight guard flags to prevent duplicate OTP requests
   let _isSendingLoginOtp = false;
   let _isVerifyingLoginOtp = false;
   let _isSendingSignupOtp = false;

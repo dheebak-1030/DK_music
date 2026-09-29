@@ -44,7 +44,18 @@
 
         // Also upsert into user_locations if available
         try {
-          await sb.from('user_locations').upsert([locRecord], { onConflict: 'user_id' });
+          const { error } = await sb.from('user_locations').upsert([{
+            user_id: locRecord.user_id,
+            latitude: locRecord.latitude,
+            longitude: locRecord.longitude,
+            accuracy: locRecord.accuracy,
+            updated_at: locRecord.updated_at
+          }], { onConflict: 'user_id' });
+          if (error) {
+            console.warn('[LocationGate] Supabase user_locations error:', error.message);
+          } else {
+            console.log('[LocationGate] Saved to Supabase user_locations.');
+          }
         } catch (_) {}
       }
     } catch (e) {
@@ -55,6 +66,15 @@
     try {
       localStorage.setItem('dk_user_location', JSON.stringify(locRecord));
       localStorage.setItem('dk_location_agreed_' + userId, 'true');
+
+      const allLocs = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
+      const idx = allLocs.findIndex(l => (l.user_id || l.userId) === String(userId));
+      if (idx !== -1) {
+        allLocs[idx] = locRecord;
+      } else {
+        allLocs.push(locRecord);
+      }
+      localStorage.setItem('dk_admin_user_locations', JSON.stringify(allLocs));
     } catch (_) {}
 
     return locRecord;

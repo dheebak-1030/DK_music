@@ -11,9 +11,14 @@ CREATE TABLE IF NOT EXISTS public.profiles (
   display_name TEXT,
   role TEXT DEFAULT 'user' CHECK (role IN ('user', 'admin')),
   status TEXT DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+  consent_accepted BOOLEAN DEFAULT false,
+  consent_date TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS consent_accepted BOOLEAN DEFAULT false;
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS consent_date TIMESTAMPTZ;
 
 -- Enable RLS
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;

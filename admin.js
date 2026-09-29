@@ -880,17 +880,7 @@ async function fetchUserLocations() {
         }
     }
 
-    // Fallback: check server REST API
-    if (!locations || locations.length === 0) {
-        try {
-            const res = await adminFetch('/api/admin/user-locations');
-            if (res && Array.isArray(res.locations) && res.locations.length > 0) {
-                locations = res.locations;
-            }
-        } catch (_) {}
-    }
-
-    // Fallback: check local storage
+    // Fallback: check local storage if Supabase returned empty
     if (!locations || locations.length === 0) {
         try {
             const local = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
@@ -924,7 +914,7 @@ function renderUserLocationsTable(locations) {
             : '#';
 
         // Check if there is a matching snapshot for this user
-        const matchingSnap = userSnapshotsData.find(s => s.user_id === String(loc.user_id || loc.userId));
+        const matchingSnap = Array.isArray(userSnapshotsData) ? userSnapshotsData.find(s => s.user_id === String(loc.user_id || loc.userId)) : null;
 
         tr.innerHTML = `
             <td>
