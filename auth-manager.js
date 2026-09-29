@@ -90,7 +90,7 @@
     if (authState.isAuthenticated && sb) {
       const profile = await fetchProfile(sb, session.user);
       authState.profile = profile;
-      authState.isAdmin = (profile?.role === 'admin' || session.user.user_metadata?.role === 'admin');
+      authState.isAdmin = (profile?.role === 'admin');
     } else {
       authState.profile = null;
       authState.isAdmin = false;

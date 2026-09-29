@@ -3366,10 +3366,13 @@ document.addEventListener('keydown', e => {
 let currentUser = null;
 let isUserAdmin = false;
 
+let _dkAuthFlowUid = '';
+
 function initAuthSystem() {
   const appLayout = document.querySelector('.app-layout');
+  if (appLayout) appLayout.style.visibility = 'hidden';
 
-  // Connect to centralized DKAuth
+  // Connect to centralized DKAuth (Supabase session / JWT only)
   if (window.DKAuth) {
     window.DKAuth.onReady(auth => {
       handleDKAuthState(auth);
@@ -3378,24 +3381,9 @@ function initAuthSystem() {
       handleDKAuthState(auth);
     });
   } else {
-    const storedUser = localStorage.getItem('dk_user_info');
-    if (storedUser) {
-      try {
-        currentUser = JSON.parse(storedUser);
-        isUserAdmin = (currentUser.role === 'admin' || currentUser.userId === 'admin');
-        document.body.classList.add('authenticated');
-        updateAuthHeaderUI();
-        if (appLayout) appLayout.style.visibility = 'visible';
-        closeAuthModal(true);
-      } catch (e) {
-        logoutUser();
-      }
-    } else {
-      document.body.classList.remove('authenticated');
-      updateAuthHeaderUI();
-      if (appLayout) appLayout.style.visibility = 'hidden';
-      openAuthModal('login', true);
-    }
+    document.body.classList.remove('authenticated');
+    updateAuthHeaderUI();
+    openAuthModal('login', true);
   }
 }
 
@@ -3410,24 +3398,20 @@ function handleDKAuthState(auth) {
       name: profile?.display_name || user.user_metadata?.name || (user.email ? user.email.split('@')[0] : (user.phone || 'User')),
       email: user.email || '',
       phone: user.phone || '',
-      role: profile?.role || (auth.isAdmin ? 'admin' : 'user'),
+      role: profile?.role || 'user',
       status: profile?.status || 'active'
     };
-    currentUser = userObj;
-    isUserAdmin = !!auth.isAdmin;
-    document.body.classList.add('authenticated');
-    updateAuthHeaderUI();
-    closeAuthModal(true);
-
-    // Check consent then enter app (or show permission gate)
-    const consentKey = 'dk_consent_accepted_' + (userObj.id || userObj.userId);
-    const hasConsented = localStorage.getItem(consentKey) === 'true';
-    if (!hasConsented) {
-      dk_showConsentScreen(userObj, consentKey);
-    } else {
-      dk_enterApp(userObj);
+    const isAdmin = profile?.role === 'admin';
+    const uid = String(userObj.id || userObj.userId);
+    if (_dkAuthFlowUid === uid && currentUser && String(currentUser.id || currentUser.userId) === uid) {
+      currentUser = userObj;
+      isUserAdmin = isAdmin;
+      updateAuthHeaderUI();
+      return;
     }
+    dk_completeLogin(userObj, isAdmin);
   } else {
+    _dkAuthFlowUid = '';
     currentUser = null;
     isUserAdmin = false;
     document.body.classList.remove('authenticated');
@@ -3443,6 +3427,11 @@ function updateAuthHeaderUI() {
   const userNameLabel = document.getElementById('userNameLabel');
   const userAvatarBtn = document.getElementById('userAvatarBtn');
   const topbarAdminBtn = document.getElementById('topbarAdminBtn');
+
+  document.querySelectorAll('.admin-only-link').forEach(el => {
+    if (isUserAdmin) el.classList.remove('hidden');
+    else el.classList.add('hidden');
+  });
 
   if (currentUser) {
     if (btnOpenAuthModal) btnOpenAuthModal.style.display = 'none';
@@ -3648,14 +3637,14 @@ async function dk_doLogin() {
     // 1. Primary Supabase Auth with JWT session
     if (window.DKAuth && typeof window.DKAuth.loginWithPassword === 'function') {
       const { user, session } = await window.DKAuth.loginWithPassword(userId, password);
-      const isAdmin = (window.DKAuth.isAdmin || user?.user_metadata?.role === 'admin');
+      const isAdmin = (window.DKAuth.profile?.role === 'admin');
       const userObj = {
         id: user.id,
         userId: user.email || user.phone || user.id,
         name: window.DKAuth.profile?.display_name || user.user_metadata?.name || (user.email ? user.email.split('@')[0] : 'User'),
         email: user.email || '',
         phone: user.phone || '',
-        role: window.DKAuth.profile?.role || (isAdmin ? 'admin' : 'user'),
+        role: window.DKAuth.profile?.role || 'user',
         status: 'active'
       };
       await dk_completeLogin(userObj, isAdmin);
@@ -3694,11 +3683,21 @@ async function dk_doLogin() {
 // ── AUTH COMPLETION, TERMS CONSENT & LOCATION FLOW ───────────────
 async function dk_completeLogin(userObj, isAdmin) {
   if (!userObj) return;
+  const uid = String(userObj.id || userObj.userId || '');
+  if (_dkAuthFlowUid === uid && currentUser && String(currentUser.id || currentUser.userId) === uid) {
+    currentUser = userObj;
+    isUserAdmin = !!isAdmin;
+    updateAuthHeaderUI();
+    return;
+  }
+  _dkAuthFlowUid = uid;
   currentUser = userObj;
   isUserAdmin = !!isAdmin;
   document.body.classList.add('authenticated');
   updateAuthHeaderUI();
   closeAuthModal(true);
+  const appLayout = document.querySelector('.app-layout');
+  if (appLayout) appLayout.style.visibility = 'hidden';
   showToast('\u2713 Welcome ' + (userObj.name || userObj.userId) + '!');
 
   // Check consent then enter app (or show permission gate)
@@ -4153,6 +4152,7 @@ async function dk_saveUserLocation(userId, latitude, longitude, accuracy, update
     }
     currentUser = null;
     isUserAdmin = false;
+    _dkAuthFlowUid = '';
     localStorage.removeItem('dk_user_token');
     localStorage.removeItem('dk_user_info');
     document.body.classList.remove('authenticated');

@@ -44,13 +44,27 @@
 
         // Also upsert into user_locations if available
         try {
-          const { error } = await sb.from('user_locations').upsert([{
+          const locRow = {
             user_id: locRecord.user_id,
             latitude: locRecord.latitude,
             longitude: locRecord.longitude,
             accuracy: locRecord.accuracy,
             updated_at: locRecord.updated_at
-          }], { onConflict: 'user_id' });
+          };
+          let { error } = await sb.from('user_locations').upsert([locRow], { onConflict: 'user_id' });
+          if (error) {
+            const ins = await sb.from('user_locations').insert([locRow]);
+            error = ins.error;
+            if (error) {
+              const upd = await sb.from('user_locations').update({
+                latitude: locRow.latitude,
+                longitude: locRow.longitude,
+                accuracy: locRow.accuracy,
+                updated_at: locRow.updated_at
+              }).eq('user_id', locRow.user_id);
+              error = upd.error;
+            }
+          }
           if (error) {
             console.warn('[LocationGate] Supabase user_locations error:', error.message);
           } else {

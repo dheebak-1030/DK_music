@@ -82,21 +82,8 @@
       };
     }
 
-    // 4. In browser environment: try loading from server API or local .env synchronously
+    // 4. In browser environment: try loading from local .env (skip missing /api routes)
     if (typeof XMLHttpRequest !== 'undefined') {
-      // 4a. Check server config endpoint if available
-      try {
-        const xhrApi = new XMLHttpRequest();
-        xhrApi.open('GET', '/api/supabase-config', false);
-        xhrApi.send(null);
-        if (xhrApi.status === 200 && xhrApi.responseText) {
-          const cfg = JSON.parse(xhrApi.responseText);
-          if (cfg.supabaseUrl && cfg.supabaseAnonKey) {
-            return { supabaseUrl: cfg.supabaseUrl.trim(), supabaseAnonKey: cfg.supabaseAnonKey.trim() };
-          }
-        }
-      } catch (_) {}
-
       // 4b. Try fetching local .env file
       const envPaths = ['.env', 'data/.env', '/.env', '/data/.env'];
       for (const path of envPaths) {

@@ -326,12 +326,7 @@ function checkAdminAuth() {
             }
         });
     } else {
-        if (adminToken && adminToken.startsWith('dk_admin_token_sec_')) {
-            adminLoginGate.style.display = 'none';
-            loadDashboardData();
-        } else {
-            adminLoginGate.style.display = 'flex';
-        }
+        adminLoginGate.style.display = 'flex';
     }
 }
 
@@ -349,9 +344,9 @@ adminLoginForm.addEventListener('submit', async (e) => {
             try {
                 const { user } = await window.DKAuth.loginWithPassword(userIdentifier, pwd);
                 await window.DKAuth.refreshProfile();
-                if (window.DKAuth.isAdmin || user?.user_metadata?.role === 'admin') {
-                    adminToken = window.DKAuth.token || ('dk_admin_token_sec_' + Date.now());
-                    sessionStorage.setItem('dk_admin_token', adminToken);
+                if (window.DKAuth.profile?.role === 'admin' || window.DKAuth.isAdmin) {
+                    adminToken = window.DKAuth.token || '';
+                    if (adminToken) sessionStorage.setItem('dk_admin_token', adminToken);
                     adminLoginGate.style.display = 'none';
                     showAdminToast('✓ Admin authentication successful! Access granted.');
                     loadDashboardData();
@@ -364,18 +359,8 @@ adminLoginForm.addEventListener('submit', async (e) => {
                     throw authErr;
                 }
                 console.warn('[Admin Auth] Supabase login notice:', authErr.message);
+                throw authErr;
             }
-        }
-
-        // 2. Direct Admin Password Verification (Local admin fallback)
-        const customAdminPwd = localStorage.getItem('dk_admin_custom_pwd') || 'Qwerty@866';
-        if ((userIdentifier === 'admin' || userIdentifier.toLowerCase().includes('admin')) && (pwd === customAdminPwd || pwd === 'Qwerty@866')) {
-            adminToken = 'dk_admin_token_sec_local_' + Date.now();
-            sessionStorage.setItem('dk_admin_token', adminToken);
-            adminLoginGate.style.display = 'none';
-            showAdminToast('✓ Local admin authentication verified! Access granted.');
-            loadDashboardData();
-            return;
         }
 
         throw new Error('Invalid Admin credentials. Please check your credentials.');
@@ -865,6 +850,7 @@ const userLocationsTableBody = document.getElementById('userLocationsTableBody')
 
 async function fetchUserLocations() {
     let locations = [];
+    let usedSupabase = false;
     const sb = window.supabaseClient || window._supabaseClient;
     if (sb) {
         try {
@@ -872,21 +858,21 @@ async function fetchUserLocations() {
                 .from('user_locations')
                 .select('*')
                 .order('updated_at', { ascending: false });
-            if (!error && Array.isArray(data) && data.length > 0) {
+            if (error) {
+                console.warn('[Admin] user_locations:', error.message);
+            } else if (Array.isArray(data)) {
                 locations = data;
+                usedSupabase = true;
             }
         } catch (e) {
             console.warn('[Admin] Supabase location fetch failed:', e);
         }
     }
 
-    // Fallback: check local storage if Supabase returned empty
-    if (!locations || locations.length === 0) {
+    if (!usedSupabase) {
         try {
             const local = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
-            if (Array.isArray(local) && local.length > 0) {
-                locations = local;
-            }
+            if (Array.isArray(local)) locations = local;
         } catch (_) {}
     }
 
