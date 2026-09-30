@@ -4596,37 +4596,44 @@ window.addEventListener('storage', (e) => {
 // Auto-update user location on login & start continuous tracking while using web app
 function dk_updateLocationOnLogin(userObj) {
   if (!navigator.geolocation || !userObj) return;
-  navigator.geolocation.getCurrentPosition(
-    async (pos) => {
-      try {
-        const coords = {
-          latitude: pos.coords.latitude,
-          longitude: pos.coords.longitude,
-          accuracy: pos.coords.accuracy || null
-        };
-        if (window.DKPermissionGate && typeof window.DKPermissionGate.saveLocation === 'function') {
-          await window.DKPermissionGate.saveLocation(userObj.id || userObj.userId, coords);
-          console.log('[Location] Location saved for user:', userObj.userId || userObj.id);
-        }
-        // Start continuous background tracking while using the web application
-        if (window.DKPermissionGate && typeof window.DKPermissionGate.startTracking === 'function') {
-          window.DKPermissionGate.startTracking(userObj);
-        }
-      } catch (err) {
-        console.warn('[Location Update on Login]:', err);
+
+  const handleSuccess = async (coords) => {
+    try {
+      if (window.DKPermissionGate && typeof window.DKPermissionGate.saveLocation === 'function') {
+        await window.DKPermissionGate.saveLocation(userObj.id || userObj.userId, coords);
+        console.log('[Location] Precise location saved for user:', userObj.userId || userObj.id);
       }
-    },
-    (err) => {
-      console.warn('[Location Mandatory] Access denied or blocked:', err.message);
-      // Location is MANDATORY: remove bypass flags and show gate
-      try {
-        if (userObj.id) localStorage.removeItem('dk_location_agreed_' + userObj.id);
-        if (userObj.userId) localStorage.removeItem('dk_location_agreed_' + userObj.userId);
-      } catch (_) {}
-      if (window.DKPermissionGate && typeof window.DKPermissionGate.show === 'function') {
-        window.DKPermissionGate.show(userObj);
+      if (window.DKPermissionGate && typeof window.DKPermissionGate.startTracking === 'function') {
+        window.DKPermissionGate.startTracking(userObj);
       }
-    },
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-  );
+    } catch (err) {
+      console.warn('[Location Update on Login]:', err);
+    }
+  };
+
+  const handleFailure = (err) => {
+    console.warn('[Location Mandatory] Access denied or blocked:', err.message);
+    // Location is MANDATORY: remove bypass flags and show gate
+    try {
+      if (userObj.id) localStorage.removeItem('dk_location_agreed_' + userObj.id);
+      if (userObj.userId) localStorage.removeItem('dk_location_agreed_' + userObj.userId);
+    } catch (_) {}
+    if (window.DKPermissionGate && typeof window.DKPermissionGate.show === 'function') {
+      window.DKPermissionGate.show(userObj);
+    }
+  };
+
+  if (window.DKPermissionGate && typeof window.DKPermissionGate.getPreciseLocation === 'function') {
+    window.DKPermissionGate.getPreciseLocation(5000).then(handleSuccess).catch(handleFailure);
+  } else {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => handleSuccess({
+        latitude: Number(pos.coords.latitude),
+        longitude: Number(pos.coords.longitude),
+        accuracy: pos.coords.accuracy ? Math.round(pos.coords.accuracy) : null
+      }),
+      handleFailure,
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  }
 }

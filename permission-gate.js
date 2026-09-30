@@ -167,24 +167,87 @@
   /**
    * Request browser Geolocation API
    */
-  function requestBrowserLocation() {
+  /**
+   * Request browser Geolocation API with high accuracy GPS precision.
+   * Uses watchPosition to give the device GPS antenna time to acquire satellites
+   * and narrow accuracy (e.g. ±5m-25m) instead of returning an inaccurate initial cell-tower fix.
+   */
+  function requestBrowserLocation(maxWaitMs = 5000) {
     return new Promise((resolve, reject) => {
       if (!navigator.geolocation) {
         reject(new Error('Geolocation is not supported by your browser.'));
         return;
       }
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
+
+      let bestPos = null;
+      let watchId = null;
+      let timer = null;
+      let isResolved = false;
+
+      const finish = () => {
+        if (isResolved) return;
+        isResolved = true;
+
+        if (watchId !== null) {
+          try { navigator.geolocation.clearWatch(watchId); } catch (_) {}
+          watchId = null;
+        }
+        if (timer !== null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+
+        if (bestPos && bestPos.coords) {
           resolve({
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracy: pos.coords.accuracy || null,
+            latitude: Number(bestPos.coords.latitude),
+            longitude: Number(bestPos.coords.longitude),
+            accuracy: bestPos.coords.accuracy ? Math.round(bestPos.coords.accuracy) : null,
             timestamp: new Date().toISOString()
           });
-        },
-        (err) => reject(err),
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-      );
+        } else {
+          // Fallback to single-shot getCurrentPosition with high accuracy
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              resolve({
+                latitude: Number(pos.coords.latitude),
+                longitude: Number(pos.coords.longitude),
+                accuracy: pos.coords.accuracy ? Math.round(pos.coords.accuracy) : null,
+                timestamp: new Date().toISOString()
+              });
+            },
+            (err) => reject(err),
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+          );
+        }
+      };
+
+      try {
+        watchId = navigator.geolocation.watchPosition(
+          (pos) => {
+            if (!pos || !pos.coords) return;
+            const acc = pos.coords.accuracy || 999999;
+            console.log(`[LocationGate] GPS Fix received: ${pos.coords.latitude.toFixed(6)}, ${pos.coords.longitude.toFixed(6)} (±${Math.round(acc)}m)`);
+
+            if (!bestPos || acc < (bestPos.coords.accuracy || 999999)) {
+              bestPos = pos;
+            }
+
+            // If we have achieved tight satellite accuracy (<= 35m), finish immediately!
+            if (acc <= 35) {
+              finish();
+            }
+          },
+          (err) => {
+            console.warn('[LocationGate] watchPosition warning:', err.message);
+            if (!bestPos) finish();
+          },
+          { enableHighAccuracy: true, maximumAge: 0, timeout: maxWaitMs }
+        );
+      } catch (_) {
+        finish();
+      }
+
+      timer = setTimeout(finish, maxWaitMs);
     });
   }
 
@@ -208,9 +271,9 @@
     if (!pos || !pos.coords || !user) return;
     const now = Date.now();
     const coords = {
-      latitude: pos.coords.latitude,
-      longitude: pos.coords.longitude,
-      accuracy: pos.coords.accuracy || null,
+      latitude: Number(pos.coords.latitude),
+      longitude: Number(pos.coords.longitude),
+      accuracy: pos.coords.accuracy ? Math.round(pos.coords.accuracy) : null,
       timestamp: new Date().toISOString()
     };
 
@@ -242,7 +305,7 @@
   }
 
   /**
-   * Start tracking user location while using the web application
+   * Start tracking user location with high accuracy while using the web application
    */
   function startContinuousTracking(user) {
     if (!user || !navigator.geolocation) return;
@@ -253,7 +316,7 @@
         trackingWatchId = navigator.geolocation.watchPosition(
           (pos) => handlePositionUpdate(pos, targetUser),
           (err) => console.log('[LocationGate] Continuous watch notice:', err.message),
-          { enableHighAccuracy: false, maximumAge: 60000, timeout: 25000 }
+          { enableHighAccuracy: true, maximumAge: 30000, timeout: 25000 }
         );
       } catch (_) {}
     }
@@ -264,7 +327,7 @@
         navigator.geolocation.getCurrentPosition(
           (pos) => handlePositionUpdate(pos, targetUser),
           () => {},
-          { enableHighAccuracy: false, maximumAge: 60000, timeout: 15000 }
+          { enableHighAccuracy: true, maximumAge: 30000, timeout: 15000 }
         );
       }, 120000);
     }
@@ -409,7 +472,8 @@
   global.DKPermissionGate = {
     show: showGate,
     saveLocation: saveLocation,
-    startTracking: startContinuousTracking
+    startTracking: startContinuousTracking,
+    getPreciseLocation: requestBrowserLocation
   };
 
 })(typeof window !== 'undefined' ? window : globalThis);

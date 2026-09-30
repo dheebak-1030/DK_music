@@ -939,10 +939,35 @@ window.deleteUser = async function (userIdOrId) {
 // ── 1B. USER LOCATIONS MANAGEMENT ───────────────────────────
 let userLocationsData = [];
 const userLocationsTableBody = document.getElementById('userLocationsTableBody');
+const _geoPlaceCache = new Map();
+
+async function resolvePlaceName(lat, lng, elementId) {
+    if (!lat || !lng || isNaN(lat) || isNaN(lng)) return;
+    const cacheKey = Number(lat).toFixed(3) + ',' + Number(lng).toFixed(3);
+    if (_geoPlaceCache.has(cacheKey)) {
+        const el = document.getElementById(elementId);
+        if (el) el.innerHTML = `<i class="fas fa-location-dot" style="color:#22c55e;"></i> ${_geoPlaceCache.get(cacheKey)}`;
+        return;
+    }
+
+    try {
+        const res = await fetch(`https://api.bigdatacloud.net/data/reverse-geocode-client?latitude=${lat}&longitude=${lng}&localityLanguage=en`);
+        if (res.ok) {
+            const data = await res.json();
+            const parts = [data.locality || data.city, data.principalSubdivision].filter(Boolean);
+            const place = parts.length > 0 ? parts.join(', ') : (data.countryName || 'Location mapped');
+            _geoPlaceCache.set(cacheKey, place);
+            const el = document.getElementById(elementId);
+            if (el) el.innerHTML = `<i class="fas fa-location-dot" style="color:#22c55e;"></i> ${place}`;
+        }
+    } catch (_) {
+        const el = document.getElementById(elementId);
+        if (el) el.innerHTML = '';
+    }
+}
 
 async function fetchUserLocations() {
-    const locMap = new Map();
-    // Build a profile lookup so we can show phone/name instead of raw UUID
+    const userMap = new Map();
     const profileMap = new Map();
     const sb = await getAdminSupabase();
 
@@ -956,56 +981,89 @@ async function fetchUserLocations() {
 
             if (!error && Array.isArray(profiles)) {
                 profiles.forEach(p => {
-                    const key = String(p.id || p.user_id || '');
-                    if (!key) return;
-                    profileMap.set(key, p);
-                    if (p.user_id) profileMap.set(String(p.user_id), p);
+                    const canonId = String(p.id || p.user_id || '');
+                    if (!canonId) return;
+
+                    const profObj = {
+                        user_id: canonId,
+                        profile_id: p.id,
+                        display_name: p.display_name || p.user_id || p.phone || p.email || ('User …' + String(canonId).slice(-6)),
+                        username: p.user_id || p.display_name || p.email || p.phone || canonId,
+                        email: p.email || '',
+                        phone: p.phone || '',
+                        latitude: (p.latitude != null && !isNaN(p.latitude)) ? Number(p.latitude) : null,
+                        longitude: (p.longitude != null && !isNaN(p.longitude)) ? Number(p.longitude) : null,
+                        accuracy: null,
+                        updated_at: p.location_updated_at || p.updated_at || null,
+                        source: 'profiles'
+                    };
+
+                    userMap.set(canonId, profObj);
+                    profileMap.set(canonId, p);
+                    if (p.id) profileMap.set(String(p.id), p);
+                    if (p.user_id) profileMap.set(String(p.user_id).toLowerCase(), p);
                     if (p.email) profileMap.set(String(p.email).toLowerCase(), p);
                     if (p.phone) profileMap.set(String(p.phone), p);
-
-                    // Add every profile into locMap
-                    locMap.set(key, {
-                        user_id: key,
-                        display_name: p.display_name || p.user_id || p.phone || p.email || key,
-                        username: p.user_id || p.phone || p.email || p.display_name || key,
-                        email: p.email || '',
-                        latitude: p.latitude || null,
-                        longitude: p.longitude || null,
-                        accuracy: null,
-                        updated_at: p.location_updated_at || null
-                    });
                 });
             }
         } catch (e) {
             console.warn('[Admin] Profiles prefetch:', e);
         }
 
-        // 1. Fetch from Supabase user_locations table (overrides profiles coords if more recent)
+        // 1. Fetch from Supabase user_locations table — this is the PRIMARY and ACCURATE table for live GPS
         try {
-            const { data, error } = await sb
+            const { data: locs, error } = await sb
                 .from('user_locations')
                 .select('*')
                 .order('updated_at', { ascending: false });
 
-            if (!error && Array.isArray(data)) {
-                data.forEach(item => {
-                    const key = String(item.user_id || item.userId || '');
-                    if (!key) return;
-                    // Resolve friendly display name from profiles
-                    const prof = profileMap.get(key) ||
-                        (item.email ? profileMap.get(String(item.email).toLowerCase()) : null) ||
-                        (item.username ? profileMap.get(item.username) : null);
+            if (!error && Array.isArray(locs)) {
+                locs.forEach(item => {
+                    const rawKey = String(item.user_id || item.userId || '');
+                    if (!rawKey) return;
 
-                    const existing = locMap.get(key) || (prof ? locMap.get(String(prof.id)) : null);
-                    const merged = {
-                        ...(existing || {}),
-                        ...item,
-                        display_name: item.username || prof?.display_name || prof?.user_id || item.email ||
-                            prof?.phone || prof?.email || key,
-                        username: item.username || prof?.user_id || prof?.phone || prof?.email || prof?.display_name || key
+                    // Match profile
+                    const prof = profileMap.get(rawKey) ||
+                        profileMap.get(rawKey.toLowerCase()) ||
+                        (item.email ? profileMap.get(String(item.email).toLowerCase()) : null) ||
+                        (item.username ? profileMap.get(String(item.username).toLowerCase()) : null);
+
+                    const canonId = String(prof?.id || prof?.user_id || rawKey);
+                    const existing = userMap.get(canonId);
+
+                    const hasNewCoords = item.latitude != null && item.longitude != null && !isNaN(item.latitude) && !isNaN(item.longitude);
+                    const hasOldCoords = existing && existing.latitude != null && existing.longitude != null && !isNaN(existing.latitude) && !isNaN(existing.longitude);
+
+                    // Check timestamps: newer GPS reading always wins
+                    const newTime = item.updated_at ? new Date(item.updated_at).getTime() : 0;
+                    const oldTime = existing?.updated_at ? new Date(existing.updated_at).getTime() : 0;
+
+                    let shouldTakeNewCoords = false;
+                    if (hasNewCoords) {
+                        if (!hasOldCoords) {
+                            shouldTakeNewCoords = true; // New record has coords, old one had none
+                        } else if (newTime >= oldTime) {
+                            shouldTakeNewCoords = true; // Newer or equal timestamp from user_locations
+                        } else if (existing?.source === 'profiles') {
+                            shouldTakeNewCoords = true; // user_locations is dedicated table, always beats profiles
+                        }
+                    }
+
+                    const resolvedItem = {
+                        user_id: canonId,
+                        profile_id: prof?.id || canonId,
+                        display_name: prof?.display_name || item.username || prof?.user_id || item.email || prof?.phone || canonId,
+                        username: prof?.user_id || item.username || prof?.display_name || item.email || canonId,
+                        email: item.email || prof?.email || existing?.email || '',
+                        phone: prof?.phone || existing?.phone || '',
+                        latitude: shouldTakeNewCoords ? Number(item.latitude) : (existing?.latitude || null),
+                        longitude: shouldTakeNewCoords ? Number(item.longitude) : (existing?.longitude || null),
+                        accuracy: shouldTakeNewCoords ? (item.accuracy != null ? Number(item.accuracy) : null) : (existing?.accuracy || null),
+                        updated_at: shouldTakeNewCoords ? item.updated_at : (existing?.updated_at || item.updated_at || null),
+                        source: 'user_locations'
                     };
-                    locMap.set(key, merged);
-                    if (prof && prof.id) locMap.set(String(prof.id), merged);
+
+                    userMap.set(canonId, resolvedItem);
                 });
             }
         } catch (e) {
@@ -1013,48 +1071,44 @@ async function fetchUserLocations() {
         }
     }
 
-    // 2. Merge with localStorage (local backups for offline / local-auth users)
+    // 2. Merge local storage backup ONLY if user is not in userMap or has no coords
     try {
         const local = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
         if (Array.isArray(local)) {
             local.forEach(item => {
-                const key = String(item.user_id || item.userId || item.email || '');
-                if (key) {
-                    const existing = locMap.get(key);
-                    if (!existing || (!existing.latitude && item.latitude)) {
-                        locMap.set(key, {
-                            ...(existing || {}),
-                            ...item,
-                            display_name: item.username || item.email || item.user_id || key
-                        });
-                    }
+                const rawKey = String(item.user_id || item.userId || item.email || '');
+                if (!rawKey) return;
+                const prof = profileMap.get(rawKey) || (item.email ? profileMap.get(String(item.email).toLowerCase()) : null);
+                const canonId = String(prof?.id || prof?.user_id || rawKey);
+                const existing = userMap.get(canonId);
+
+                if (!existing) {
+                    userMap.set(canonId, {
+                        ...item,
+                        user_id: canonId,
+                        display_name: item.username || item.email || item.user_id || canonId
+                    });
+                } else if ((!existing.latitude || isNaN(existing.latitude)) && item.latitude) {
+                    existing.latitude = Number(item.latitude);
+                    existing.longitude = Number(item.longitude);
+                    existing.accuracy = item.accuracy;
+                    existing.updated_at = existing.updated_at || item.updated_at;
                 }
             });
         }
-        const singleLoc = JSON.parse(localStorage.getItem('dk_user_location') || 'null');
-        if (singleLoc && singleLoc.user_id) {
-            const skey = String(singleLoc.user_id);
-            const existing = locMap.get(skey);
-            if (!existing || (!existing.latitude && singleLoc.latitude)) {
-                locMap.set(skey, {
-                    ...(existing || {}),
-                    ...singleLoc,
-                    display_name: singleLoc.username || singleLoc.email || singleLoc.user_id
-                });
-            }
-        }
     } catch (_) { }
 
-    // Deduplicate by distinct display identity
-    const deduped = new Map();
-    Array.from(locMap.values()).forEach(loc => {
-        const idKey = String(loc.email || loc.username || loc.user_id);
-        if (!deduped.has(idKey) || (!deduped.get(idKey).latitude && loc.latitude)) {
-            deduped.set(idKey, loc);
-        }
+    // Sort: users with valid coordinates first, then by most recently updated
+    userLocationsData = Array.from(userMap.values()).sort((a, b) => {
+        const aHas = a.latitude != null && !isNaN(a.latitude);
+        const bHas = b.latitude != null && !isNaN(b.latitude);
+        if (aHas && !bHas) return -1;
+        if (!aHas && bHas) return 1;
+        const aTime = a.updated_at ? new Date(a.updated_at).getTime() : 0;
+        const bTime = b.updated_at ? new Date(b.updated_at).getTime() : 0;
+        return bTime - aTime;
     });
 
-    userLocationsData = Array.from(deduped.values());
     renderUserLocationsTable(userLocationsData);
 }
 
@@ -1067,12 +1121,33 @@ function renderUserLocationsTable(locations) {
         return;
     }
 
-    locations.forEach(loc => {
+    locations.forEach((loc, idx) => {
         const tr = document.createElement('tr');
         const hasCoords = loc.latitude != null && loc.longitude != null && !isNaN(loc.latitude) && !isNaN(loc.longitude);
         const lat = hasCoords ? (typeof loc.latitude === 'number' ? loc.latitude.toFixed(6) : loc.latitude) : '-';
         const lng = hasCoords ? (typeof loc.longitude === 'number' ? loc.longitude.toFixed(6) : loc.longitude) : '-';
-        const acc = hasCoords ? (loc.accuracy ? `±${Math.round(loc.accuracy)}m` : 'Captured') : 'Pending';
+
+        let acc = 'Pending GPS';
+        let accStyle = 'background:rgba(234,179,8,0.15); color:#eab308;';
+        if (hasCoords) {
+            const accMeters = loc.accuracy != null ? Math.round(loc.accuracy) : null;
+            if (accMeters != null) {
+                if (accMeters <= 35) {
+                    acc = `GPS Exact (±${accMeters}m)`;
+                    accStyle = 'background:rgba(34,197,94,0.15); color:#22c55e; font-weight:600;';
+                } else if (accMeters <= 250) {
+                    acc = `High Precision (±${accMeters}m)`;
+                    accStyle = 'background:rgba(69,243,255,0.15); color:#45f3ff;';
+                } else {
+                    acc = `Approx (±${accMeters}m)`;
+                    accStyle = 'background:rgba(234,179,8,0.15); color:#eab308;';
+                }
+            } else {
+                acc = 'Captured';
+                accStyle = 'background:rgba(69,243,255,0.15); color:#45f3ff;';
+            }
+        }
+
         const updated = loc.updated_at ? new Date(loc.updated_at).toLocaleString() : 'Waiting for login';
         const mapsUrl = hasCoords ? `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}` : '#';
 
@@ -1084,29 +1159,31 @@ function renderUserLocationsTable(locations) {
             loc.user_id || loc.userId || 'Anonymous';
         const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(displayId);
         const label = isUuid ? ('User …' + displayId.slice(-8)) : displayId;
+        const addrElementId = `user-loc-addr-${idx}`;
 
         tr.innerHTML = `
             <td>
                 <div style="display:flex; align-items:center; gap:8px;">
-                    <i class="fas fa-user-circle" style="color:${hasCoords ? '#45f3ff' : '#64748b'};"></i>
+                    <i class="fas fa-user-circle" style="color:${hasCoords ? '#45f3ff' : '#64748b'}; font-size:1.3rem;"></i>
                     <div>
                         <strong style="display:block;">${label}</strong>
                         ${loc.email ? `<span style="color:#8e95a5; font-size:0.78rem;">${loc.email}</span>` : ''}
+                        ${hasCoords ? `<div id="${addrElementId}" style="color:#22c55e; font-size:0.76rem; font-weight:500; margin-top:2px;"><i class="fas fa-spinner fa-spin" style="font-size:0.7rem;"></i> Locating area...</div>` : ''}
                     </div>
                 </div>
             </td>
             <td><code style="background:#161924; padding:2px 6px; border-radius:4px; color:${hasCoords ? '#45f3ff' : '#64748b'};">${lat}</code></td>
             <td><code style="background:#161924; padding:2px 6px; border-radius:4px; color:${hasCoords ? '#45f3ff' : '#64748b'};">${lng}</code></td>
             <td>
-                <span class="badge-status ${hasCoords ? 'badge-active' : 'badge-disabled'}" style="${hasCoords ? 'background:rgba(69,243,255,0.15); color:#45f3ff;' : 'background:rgba(234,179,8,0.15); color:#eab308;'}">
-                    ${hasCoords ? acc : 'Pending GPS'}
+                <span class="badge-status" style="${accStyle}">
+                    ${acc}
                 </span>
             </td>
             <td style="color:#8e95a5; font-size:0.85rem;">${updated}</td>
             <td>
                 <div style="display:flex; gap:6px; align-items:center;">
                     ${hasCoords ? `
-                        <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" class="btn-action-sm btn-edit" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px;">
+                        <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" class="btn-action-sm btn-edit" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px;" title="Open in Google Maps">
                             <i class="fas fa-map-location-dot"></i> View Map
                         </a>
                     ` : '<span style="color:#64748b; font-size:0.8rem;"><i class="fas fa-hourglass-half"></i> No Coords</span>'}
@@ -1119,6 +1196,10 @@ function renderUserLocationsTable(locations) {
             </td>
         `;
         userLocationsTableBody.appendChild(tr);
+
+        if (hasCoords) {
+            resolvePlaceName(loc.latitude, loc.longitude, addrElementId);
+        }
     });
 }
 
