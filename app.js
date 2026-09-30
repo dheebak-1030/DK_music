@@ -3766,13 +3766,26 @@ function dk_showConsentScreen(userObj, consentKey) {
 
 function dk_enterApp(userObj) {
   const appLayout = document.querySelector('.app-layout');
-  dk_updateLocationOnLogin(userObj);
-  if (window.DKPermissionGate) {
+  const userId = userObj && (userObj.id || userObj.userId);
+  const locationAgreedKey = 'dk_location_agreed_' + userId;
+  const locationStatus = userId ? localStorage.getItem(locationAgreedKey) : null;
+  const alreadyAgreed = locationStatus === 'true';
+
+  if (alreadyAgreed) {
+    // Returning user who already agreed — show app immediately, then silently
+    // update location in the background (no browser prompt conflict).
+    if (appLayout) appLayout.style.visibility = 'visible';
+    dk_updateLocationOnLogin(userObj);
+  } else if (window.DKPermissionGate) {
+    // First-time user (or skipped) — show location agreement modal.
+    // The gate handles geolocation internally; do NOT call dk_updateLocationOnLogin
+    // here as it would fire a competing browser permission prompt.
     window.DKPermissionGate.show(userObj, (results) => {
       if (appLayout) appLayout.style.visibility = 'visible';
       console.log('[Permission Gate] Flow complete:', results);
     });
   } else {
+    // Gate unavailable — show app without location prompt.
     if (appLayout) appLayout.style.visibility = 'visible';
   }
 }
