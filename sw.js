@@ -1,5 +1,5 @@
 // Service Worker for DK Music PWA & Offline Support
-const CACHE_NAME = 'dk-music-cache-v3';
+const CACHE_NAME = 'dk-music-cache-v4';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -10,6 +10,9 @@ const STATIC_ASSETS = [
   './audio-visualizer-3d.js',
   './jam-sync.js',
   './supabase-client.js',
+  './auth-manager.js',
+  './permission-gate.js',
+  './config.js',
   './manifest.json'
 ];
 

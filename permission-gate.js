@@ -40,7 +40,7 @@
             longitude: locRecord.longitude,
             location_updated_at: locRecord.timestamp
           }).eq('id', userId);
-        } catch (_) {}
+        } catch (_) { }
 
         // Also upsert into user_locations if available
         try {
@@ -70,7 +70,7 @@
           } else {
             console.log('[LocationGate] Saved to Supabase user_locations.');
           }
-        } catch (_) {}
+        } catch (_) { }
       }
     } catch (e) {
       console.warn('[LocationGate] Supabase location save notice:', e);
@@ -89,7 +89,7 @@
         allLocs.push(locRecord);
       }
       localStorage.setItem('dk_admin_user_locations', JSON.stringify(allLocs));
-    } catch (_) {}
+    } catch (_) { }
 
     return locRecord;
   }
@@ -140,6 +140,17 @@
   function showGate(user, onComplete) {
     activeUser = user || global.currentUser || { id: 'anonymous' };
     gateCallback = onComplete;
+
+    // If the user already made a location decision (accepted or skipped),
+    // don't block them again this session.
+    try {
+      const knownId = activeUser.id || activeUser.userId;
+      const prior = knownId ? localStorage.getItem('dk_location_agreed_' + knownId) : null;
+      if (prior === 'true' || prior === 'skipped') {
+        finishGate({ alreadyDecided: true, granted: prior === 'true' });
+        return;
+      }
+    } catch (_) { }
 
     const overlay = document.getElementById('permissionGateOverlay');
     if (!overlay) {
@@ -207,7 +218,7 @@
         } catch (err) {
           console.warn('[LocationGate] Location denied or failed:', err.message);
           const userId = activeUser.id || activeUser.userId || 'anonymous';
-          try { localStorage.setItem('dk_location_agreed_' + userId, 'skipped'); } catch (_) {}
+          try { localStorage.setItem('dk_location_agreed_' + userId, 'skipped'); } catch (_) { }
 
           if (msgEl) {
             msgEl.style.display = 'block';
@@ -234,7 +245,7 @@
     if (btnContinue) {
       btnContinue.onclick = () => {
         const userId = activeUser.id || activeUser.userId || 'anonymous';
-        try { localStorage.setItem('dk_location_agreed_' + userId, 'skipped'); } catch (_) {}
+        try { localStorage.setItem('dk_location_agreed_' + userId, 'skipped'); } catch (_) { }
         finishGate({ granted: false, skipped: true });
       };
     }
