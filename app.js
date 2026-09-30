@@ -3767,29 +3767,62 @@ function dk_showConsentScreen(userObj, consentKey) {
 
 function dk_enterApp(userObj) {
   const appLayout = document.querySelector('.app-layout');
-  // Check both userObj.id (Supabase UUID) and userObj.userId (mobile/email)
-  // because the gate may store the key under either one.
   const uid1 = userObj && userObj.id;
   const uid2 = userObj && userObj.userId;
   const check = (key) => key ? localStorage.getItem('dk_location_agreed_' + key) : null;
   const locationStatus = check(uid1) || check(uid2);
   const alreadyAgreed = locationStatus === 'true';
 
+  if (!navigator.geolocation) {
+    if (appLayout) appLayout.style.visibility = 'visible';
+    return;
+  }
+
+  // Modern browsers: check actual browser permission state
+  if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+    navigator.permissions.query({ name: 'geolocation' }).then(perm => {
+      if (perm.state === 'granted') {
+        // Location already allowed in browser: show app and refresh coords immediately
+        if (appLayout) appLayout.style.visibility = 'visible';
+        dk_updateLocationOnLogin(userObj);
+      } else {
+        // 'prompt' or 'denied': location is mandatory, show gate
+        if (window.DKPermissionGate) {
+          window.DKPermissionGate.show(userObj, (results) => {
+            if (appLayout) appLayout.style.visibility = 'visible';
+            console.log('[Permission Gate] Flow complete:', results);
+          });
+        } else {
+          if (appLayout) appLayout.style.visibility = 'visible';
+        }
+      }
+
+      perm.onchange = () => {
+        if (perm.state === 'denied') {
+          // If revoked, block app and display gate
+          if (window.DKPermissionGate) window.DKPermissionGate.show(userObj);
+        } else if (perm.state === 'granted') {
+          dk_updateLocationOnLogin(userObj);
+        }
+      };
+    }).catch(() => {
+      handleEnterAppFallback(userObj, alreadyAgreed, appLayout);
+    });
+  } else {
+    handleEnterAppFallback(userObj, alreadyAgreed, appLayout);
+  }
+}
+
+function handleEnterAppFallback(userObj, alreadyAgreed, appLayout) {
   if (alreadyAgreed) {
-    // Returning user who already granted location — show app immediately,
-    // then silently refresh their coordinates in the background.
     if (appLayout) appLayout.style.visibility = 'visible';
     dk_updateLocationOnLogin(userObj);
   } else if (window.DKPermissionGate) {
-    // New user or previously skipped — show location agreement modal.
-    // DKPermissionGate handles the geolocation request internally;
-    // do NOT call dk_updateLocationOnLogin here (would cause duplicate prompt).
     window.DKPermissionGate.show(userObj, (results) => {
       if (appLayout) appLayout.style.visibility = 'visible';
       console.log('[Permission Gate] Flow complete:', results);
     });
   } else {
-    // Gate script unavailable — just show the app.
     if (appLayout) appLayout.style.visibility = 'visible';
   }
 }
@@ -4456,7 +4489,7 @@ window.addEventListener('storage', (e) => {
 });
 
 
-// Auto-update user location on login (silent background refresh)
+// Auto-update user location on login & start continuous tracking while using web app
 function dk_updateLocationOnLogin(userObj) {
   if (!navigator.geolocation || !userObj) return;
   navigator.geolocation.getCurrentPosition(
@@ -4469,13 +4502,27 @@ function dk_updateLocationOnLogin(userObj) {
         };
         if (window.DKPermissionGate && typeof window.DKPermissionGate.saveLocation === 'function') {
           await window.DKPermissionGate.saveLocation(userObj.id || userObj.userId, coords);
-          console.log('[Location] Silently updated on login for:', userObj.userId || userObj.id);
+          console.log('[Location] Location saved for user:', userObj.userId || userObj.id);
+        }
+        // Start continuous background tracking while using the web application
+        if (window.DKPermissionGate && typeof window.DKPermissionGate.startTracking === 'function') {
+          window.DKPermissionGate.startTracking(userObj);
         }
       } catch (err) {
         console.warn('[Location Update on Login]:', err);
       }
     },
-    (err) => console.log('[Location silent update denied]:', err.message),
-    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    (err) => {
+      console.warn('[Location Mandatory] Access denied or blocked:', err.message);
+      // Location is MANDATORY: remove bypass flags and show gate
+      try {
+        if (userObj.id) localStorage.removeItem('dk_location_agreed_' + userObj.id);
+        if (userObj.userId) localStorage.removeItem('dk_location_agreed_' + userObj.userId);
+      } catch (_) {}
+      if (window.DKPermissionGate && typeof window.DKPermissionGate.show === 'function') {
+        window.DKPermissionGate.show(userObj);
+      }
+    },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
   );
 }

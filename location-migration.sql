@@ -1,40 +1,48 @@
-﻿-- ============================================================
--- DK MUSIC — Location Columns Migration
--- Run in Supabase SQL Editor to add missing location columns
+-- ============================================================
+-- DK MUSIC — Location & Profiles Migration Script
+-- Run this in your Supabase SQL Editor (Dashboard → SQL Editor)
 -- ============================================================
 
--- Add location columns to profiles table (required by saveLocation)
+-- 1. Add user_id and location columns to profiles table
+ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS user_id TEXT;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;
 ALTER TABLE public.profiles ADD COLUMN IF NOT EXISTS location_updated_at TIMESTAMPTZ;
 
--- Add username and email columns to user_locations table
--- so admin can see phone/name instead of raw UUID
+-- Backfill user_id from display_name or id if empty
+UPDATE public.profiles 
+SET user_id = COALESCE(user_id, display_name, id::text) 
+WHERE user_id IS NULL;
+
+-- 2. Add username and email columns to user_locations table
 ALTER TABLE public.user_locations ADD COLUMN IF NOT EXISTS username TEXT;
 ALTER TABLE public.user_locations ADD COLUMN IF NOT EXISTS email TEXT;
 
--- Update select policy: allow admin to see ALL user locations
+-- 3. RLS: Allow profiles to be read by Admin and authenticated/anon users
+DROP POLICY IF EXISTS "profiles_select" ON public.profiles;
+CREATE POLICY "profiles_select"
+  ON public.profiles FOR SELECT
+  USING (true);
+
+-- 4. RLS: Allow user_locations to be read by Admin and authenticated/anon users
 DROP POLICY IF EXISTS "user_locations_select" ON public.user_locations;
 CREATE POLICY "user_locations_select"
   ON public.user_locations FOR SELECT
-  USING (
-    public.is_admin()
-    OR (auth.jwt()->>'role')::text = 'admin'
-    OR auth.uid()::text = user_id
-    OR auth.role() = 'authenticated'
-    OR auth.role() = 'anon'
-  );
+  USING (true);
 
--- Allow upsert (update) for user_locations
+-- 5. RLS: Allow insert and update for user_locations
+DROP POLICY IF EXISTS "user_locations_insert" ON public.user_locations;
+CREATE POLICY "user_locations_insert"
+  ON public.user_locations FOR INSERT
+  WITH CHECK (true);
+
 DROP POLICY IF EXISTS "user_locations_upsert" ON public.user_locations;
 CREATE POLICY "user_locations_upsert"
   ON public.user_locations FOR UPDATE
-  USING (
-    auth.uid()::text = user_id
-    OR auth.role() = 'authenticated'
-    OR auth.role() = 'anon'
-  );
+  USING (true);
 
--- Verify
-SELECT column_name, data_type FROM information_schema.columns
-WHERE table_name = 'user_locations' ORDER BY ordinal_position;
+-- 6. Verification query
+SELECT column_name, data_type 
+FROM information_schema.columns
+WHERE table_name IN ('profiles', 'user_locations') 
+ORDER BY table_name, ordinal_position;

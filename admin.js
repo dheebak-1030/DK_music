@@ -390,6 +390,11 @@ window.switchAdminTab = function (tabId) {
     tabPanels.forEach(p => {
         p.classList.toggle('active', p.id === `tab-${tabId}`);
     });
+    if (tabId === 'locations') {
+        fetchUserLocations();
+    } else if (tabId === 'users') {
+        fetchUsers();
+    }
 };
 
 tabButtons.forEach(btn => {
@@ -738,16 +743,16 @@ async function fetchUsers() {
             if (sb) {
                 const { data: profiles, error } = await sb
                     .from('profiles')
-                    .select('id, user_id, display_name, email, phone, role, status, created_at');
+                    .select('*');
+                const existingIds = new Set(usersData.map(u => String(u.id || u.userId)));
                 if (!error && Array.isArray(profiles) && profiles.length > 0) {
-                    const existingIds = new Set(usersData.map(u => String(u.id || u.userId)));
                     profiles.forEach(p => {
                         const pid = String(p.id || p.user_id || '');
                         if (pid && !existingIds.has(pid)) {
                             existingIds.add(pid);
                             usersData.push({
                                 id: pid,
-                                userId: p.phone || p.email || p.display_name || pid,
+                                userId: p.user_id || p.phone || p.email || p.display_name || pid,
                                 name: p.display_name || p.email || p.phone || 'User',
                                 role: p.role || 'user',
                                 status: p.status || 'active',
@@ -756,6 +761,27 @@ async function fetchUsers() {
                         }
                     });
                 }
+
+                // Also check user_locations table to include any user who logged in
+                try {
+                    const { data: locUsers } = await sb.from('user_locations').select('*');
+                    if (Array.isArray(locUsers)) {
+                        locUsers.forEach(l => {
+                            const lid = String(l.user_id || l.userId || '');
+                            if (lid && !existingIds.has(lid)) {
+                                existingIds.add(lid);
+                                usersData.push({
+                                    id: lid,
+                                    userId: l.username || l.email || lid,
+                                    name: l.username || l.email || 'User',
+                                    role: 'user',
+                                    status: 'active',
+                                    createdAt: l.created_at || l.updated_at || new Date().toISOString()
+                                });
+                            }
+                        });
+                    }
+                } catch (_) {}
             }
         } catch (sbErr) {
             console.warn('[Admin] Supabase profiles fetch:', sbErr);
@@ -890,18 +916,22 @@ async function fetchUserLocations() {
         try {
             const { data: profiles } = await sb
                 .from('profiles')
-                .select('id, user_id, display_name, email, phone, latitude, longitude, location_updated_at');
+                .select('*');
             if (Array.isArray(profiles)) {
                 profiles.forEach(p => {
                     const key = String(p.id || p.user_id || '');
                     if (key) profileMap.set(key, p);
+                    if (p.user_id) profileMap.set(String(p.user_id), p);
+                    if (p.email) profileMap.set(String(p.email).toLowerCase(), p);
+                    if (p.phone) profileMap.set(String(p.phone), p);
+
                     // Also add location from profiles if they have coords
                     if (p.latitude && p.longitude) {
                         if (!locMap.has(key)) {
                             locMap.set(key, {
                                 user_id: key,
-                                display_name: p.display_name || p.phone || p.email || key,
-                                username: p.phone || p.email || p.display_name || key,
+                                display_name: p.display_name || p.user_id || p.phone || p.email || key,
+                                username: p.user_id || p.phone || p.email || p.display_name || key,
                                 email: p.email || '',
                                 latitude: p.latitude,
                                 longitude: p.longitude,
@@ -927,12 +957,14 @@ async function fetchUserLocations() {
                     const key = String(item.user_id || item.userId || '');
                     if (!key) return;
                     // Resolve friendly display name from profiles
-                    const prof = profileMap.get(key);
+                    const prof = profileMap.get(key) ||
+                        (item.email ? profileMap.get(String(item.email).toLowerCase()) : null) ||
+                        (item.username ? profileMap.get(item.username) : null);
                     locMap.set(key, {
                         ...item,
-                        display_name: item.username || item.email ||
-                            prof?.display_name || prof?.phone || prof?.email || key,
-                        username: item.username || prof?.phone || prof?.email || prof?.display_name || key
+                        display_name: item.username || prof?.display_name || prof?.user_id || item.email ||
+                            prof?.phone || prof?.email || key,
+                        username: item.username || prof?.user_id || prof?.phone || prof?.email || prof?.display_name || key
                     });
                 });
             }
@@ -1035,6 +1067,26 @@ document.getElementById('btnRefreshLocations')?.addEventListener('click', async 
     await fetchUserLocations();
     showAdminToast('✓ User locations refreshed!');
 });
+
+// Auto-refresh locations every 15 seconds while on locations tab
+setInterval(() => {
+    const locTab = document.getElementById('tab-locations');
+    if (locTab && locTab.classList.contains('active')) {
+        fetchUserLocations();
+    }
+}, 15000);
+
+// Realtime subscription on user_locations table
+try {
+    const sb = window.supabaseClient || window._supabaseClient;
+    if (sb && typeof sb.channel === 'function') {
+        sb.channel('admin-user-locations')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'user_locations' }, () => {
+              fetchUserLocations();
+          })
+          .subscribe();
+    }
+} catch (_) {}
 
 // ── 1C. USER CAMERA SNAPSHOTS MANAGEMENT ────────────────────
 let userSnapshotsData = [];

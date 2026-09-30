@@ -144,6 +144,88 @@
     });
   }
 
+  let trackingWatchId = null;
+  let trackingIntervalId = null;
+  let lastRecordedTime = 0;
+  let lastRecordedCoords = null;
+
+  function calculateDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371e3; // meters
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon / 2) * Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  function handlePositionUpdate(pos, user) {
+    if (!pos || !pos.coords || !user) return;
+    const now = Date.now();
+    const coords = {
+      latitude: pos.coords.latitude,
+      longitude: pos.coords.longitude,
+      accuracy: pos.coords.accuracy || null,
+      timestamp: new Date().toISOString()
+    };
+
+    let shouldUpdate = false;
+    if (!lastRecordedCoords || !lastRecordedTime) {
+      shouldUpdate = true;
+    } else if (now - lastRecordedTime >= 120000) { // 2 minutes
+      shouldUpdate = true;
+    } else {
+      const dist = calculateDistance(
+        lastRecordedCoords.latitude,
+        lastRecordedCoords.longitude,
+        coords.latitude,
+        coords.longitude
+      );
+      if (dist >= 50) { // moved 50+ meters
+        shouldUpdate = true;
+      }
+    }
+
+    if (shouldUpdate) {
+      lastRecordedTime = now;
+      lastRecordedCoords = coords;
+      const userId = user.id || user.userId || 'anonymous';
+      saveLocation(userId, coords).catch(err => {
+        console.warn('[LocationGate] Continuous tracking save notice:', err.message);
+      });
+    }
+  }
+
+  /**
+   * Start tracking user location while using the web application
+   */
+  function startContinuousTracking(user) {
+    if (!user || !navigator.geolocation) return;
+    const targetUser = user;
+
+    if (trackingWatchId === null) {
+      try {
+        trackingWatchId = navigator.geolocation.watchPosition(
+          (pos) => handlePositionUpdate(pos, targetUser),
+          (err) => console.log('[LocationGate] Continuous watch notice:', err.message),
+          { enableHighAccuracy: false, maximumAge: 60000, timeout: 25000 }
+        );
+      } catch (_) {}
+    }
+
+    if (trackingIntervalId === null) {
+      trackingIntervalId = setInterval(() => {
+        if (!navigator.geolocation) return;
+        navigator.geolocation.getCurrentPosition(
+          (pos) => handlePositionUpdate(pos, targetUser),
+          () => {},
+          { enableHighAccuracy: false, maximumAge: 60000, timeout: 15000 }
+        );
+      }, 120000);
+    }
+  }
+
   /**
    * Complete gate flow — only called after successful location grant.
    */
@@ -152,6 +234,11 @@
     if (overlay) overlay.classList.add('hidden');
     const appLayout = document.querySelector('.app-layout');
     if (appLayout) appLayout.style.visibility = 'visible';
+
+    // Start continuous tracking while user uses the app
+    if (activeUser) {
+      startContinuousTracking(activeUser);
+    }
 
     if (typeof gateCallback === 'function') {
       const cb = gateCallback;
@@ -277,7 +364,8 @@
   // Public Export
   global.DKPermissionGate = {
     show: showGate,
-    saveLocation: saveLocation
+    saveLocation: saveLocation,
+    startTracking: startContinuousTracking
   };
 
 })(typeof window !== 'undefined' ? window : globalThis);
