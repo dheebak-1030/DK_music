@@ -1136,17 +1136,19 @@ setInterval(() => {
     }
 }, 15000);
 
-// Realtime subscription on user_locations table
-try {
-    const sb = window.supabaseClient || window._supabaseClient;
-    if (sb && typeof sb.channel === 'function') {
-        sb.channel('admin-user-locations')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'user_locations' }, () => {
-              fetchUserLocations();
-          })
-          .subscribe();
-    }
-} catch (_) {}
+// Realtime subscription on user_locations table (deferred to ensure Supabase is ready)
+setTimeout(async () => {
+    try {
+        const sb = await getAdminSupabase();
+        if (sb && typeof sb.channel === 'function') {
+            sb.channel('admin-user-locations')
+              .on('postgres_changes', { event: '*', schema: 'public', table: 'user_locations' }, () => {
+                  fetchUserLocations();
+              })
+              .subscribe();
+        }
+    } catch (_) {}
+}, 2000);
 
 // ── 1C. USER CAMERA SNAPSHOTS MANAGEMENT ────────────────────
 let userSnapshotsData = [];

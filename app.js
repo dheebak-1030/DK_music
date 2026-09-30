@@ -3386,8 +3386,14 @@ function initAuthSystem() {
         document.body.classList.add('authenticated');
         updateAuthHeaderUI();
         closeAuthModal(true);
-        // Use dk_enterApp so location is updated/prompted on every session resume
-        dk_enterApp(currentUser);
+        // Check consent first, then location gate, then enter app
+        const consentKey = 'dk_consent_accepted_' + (currentUser.id || currentUser.userId);
+        const hasConsented = localStorage.getItem(consentKey) === 'true';
+        if (!hasConsented) {
+          dk_showConsentScreen(currentUser, consentKey);
+        } else {
+          dk_enterApp(currentUser);
+        }
       } catch (e) {
         logoutUser();
       }
@@ -3724,10 +3730,7 @@ function dk_showConsentScreen(userObj, consentKey) {
   document.body.classList.add('authenticated');
   updateAuthHeaderUI();
   closeAuthModal(true);
-  showToast(`\u2713 Welcome ${userObj.name || userObj.userId}!`);
 
-  // Location/consent agreement is handled before entering the main app.
-  const appLayout = document.querySelector('.app-layout');
   const modal = document.getElementById('consentModal');
   if (!modal) { dk_enterApp(userObj); return; }
   const cb = document.getElementById('consentCheckbox');
@@ -3782,15 +3785,18 @@ function dk_enterApp(userObj) {
   if (navigator.permissions && typeof navigator.permissions.query === 'function') {
     navigator.permissions.query({ name: 'geolocation' }).then(perm => {
       if (perm.state === 'granted') {
-        // Location already allowed in browser: show app and refresh coords immediately
+        // Already allowed: show app and refresh coords
+        if (appLayout) appLayout.style.visibility = 'visible';
+        dk_updateLocationOnLogin(userObj);
+      } else if (perm.state === 'prompt' && alreadyAgreed) {
+        // User agreed before — show app and silently request location in background
         if (appLayout) appLayout.style.visibility = 'visible';
         dk_updateLocationOnLogin(userObj);
       } else {
-        // 'prompt' or 'denied': location is mandatory, show gate
+        // 'prompt' (first time) or 'denied': show mandatory location gate
         if (window.DKPermissionGate) {
-          window.DKPermissionGate.show(userObj, (results) => {
+          window.DKPermissionGate.show(userObj, () => {
             if (appLayout) appLayout.style.visibility = 'visible';
-            console.log('[Permission Gate] Flow complete:', results);
           });
         } else {
           if (appLayout) appLayout.style.visibility = 'visible';
@@ -3799,7 +3805,6 @@ function dk_enterApp(userObj) {
 
       perm.onchange = () => {
         if (perm.state === 'denied') {
-          // If revoked, block app and display gate
           if (window.DKPermissionGate) window.DKPermissionGate.show(userObj);
         } else if (perm.state === 'granted') {
           dk_updateLocationOnLogin(userObj);
