@@ -730,6 +730,37 @@ async function fetchUsers() {
     try {
         const data = await adminFetch('/api/admin/users');
         usersData = data.users || [];
+
+        // Also pull Supabase-authenticated users from profiles table
+        // (phone-OTP users are never in localStorage but are in Supabase)
+        try {
+            const sb = window.supabaseClient || window._supabaseClient;
+            if (sb) {
+                const { data: profiles, error } = await sb
+                    .from('profiles')
+                    .select('id, user_id, display_name, email, phone, role, status, created_at');
+                if (!error && Array.isArray(profiles) && profiles.length > 0) {
+                    const existingIds = new Set(usersData.map(u => String(u.id || u.userId)));
+                    profiles.forEach(p => {
+                        const pid = String(p.id || p.user_id || '');
+                        if (pid && !existingIds.has(pid)) {
+                            existingIds.add(pid);
+                            usersData.push({
+                                id: pid,
+                                userId: p.phone || p.email || p.display_name || pid,
+                                name: p.display_name || p.email || p.phone || 'User',
+                                role: p.role || 'user',
+                                status: p.status || 'active',
+                                createdAt: p.created_at || new Date().toISOString()
+                            });
+                        }
+                    });
+                }
+            }
+        } catch (sbErr) {
+            console.warn('[Admin] Supabase profiles fetch:', sbErr);
+        }
+
         renderUsersTable(usersData);
         renderDashboard();
     } catch (err) {
@@ -850,10 +881,42 @@ const userLocationsTableBody = document.getElementById('userLocationsTableBody')
 
 async function fetchUserLocations() {
     const locMap = new Map();
+    // Build a profile lookup so we can show phone/name instead of raw UUID
+    const profileMap = new Map();
     const sb = window.supabaseClient || window._supabaseClient;
 
-    // 1. Fetch from Supabase user_locations table
+    // 0. Pre-load profiles for friendly name resolution
     if (sb) {
+        try {
+            const { data: profiles } = await sb
+                .from('profiles')
+                .select('id, user_id, display_name, email, phone, latitude, longitude, location_updated_at');
+            if (Array.isArray(profiles)) {
+                profiles.forEach(p => {
+                    const key = String(p.id || p.user_id || '');
+                    if (key) profileMap.set(key, p);
+                    // Also add location from profiles if they have coords
+                    if (p.latitude && p.longitude) {
+                        if (!locMap.has(key)) {
+                            locMap.set(key, {
+                                user_id: key,
+                                display_name: p.display_name || p.phone || p.email || key,
+                                username: p.phone || p.email || p.display_name || key,
+                                email: p.email || '',
+                                latitude: p.latitude,
+                                longitude: p.longitude,
+                                accuracy: null,
+                                updated_at: p.location_updated_at || new Date().toISOString()
+                            });
+                        }
+                    }
+                });
+            }
+        } catch (e) {
+            console.warn('[Admin] Profiles prefetch:', e);
+        }
+
+        // 1. Fetch from Supabase user_locations table (overrides profiles coords if more recent)
         try {
             const { data, error } = await sb
                 .from('user_locations')
@@ -861,53 +924,43 @@ async function fetchUserLocations() {
                 .order('updated_at', { ascending: false });
             if (!error && Array.isArray(data)) {
                 data.forEach(item => {
-                    const key = String(item.user_id || item.userId || item.email || Math.random());
-                    locMap.set(key, item);
+                    const key = String(item.user_id || item.userId || '');
+                    if (!key) return;
+                    // Resolve friendly display name from profiles
+                    const prof = profileMap.get(key);
+                    locMap.set(key, {
+                        ...item,
+                        display_name: item.username || item.email ||
+                            prof?.display_name || prof?.phone || prof?.email || key,
+                        username: item.username || prof?.phone || prof?.email || prof?.display_name || key
+                    });
                 });
             }
         } catch (e) {
             console.warn('[Admin] Supabase user_locations fetch:', e);
         }
-
-        // 2. Also check profiles table for any saved latitude/longitude
-        try {
-            const { data: profiles, error: pErr } = await sb
-                .from('profiles')
-                .select('id, user_id, email, display_name, latitude, longitude, location_updated_at')
-                .not('latitude', 'is', null);
-            if (!pErr && Array.isArray(profiles)) {
-                profiles.forEach(p => {
-                    const key = String(p.id || p.user_id || p.email);
-                    if (!locMap.has(key)) {
-                        locMap.set(key, {
-                            user_id: p.display_name || p.user_id || p.email || p.id,
-                            latitude: p.latitude,
-                            longitude: p.longitude,
-                            accuracy: null,
-                            updated_at: p.location_updated_at || new Date().toISOString()
-                        });
-                    }
-                });
-            }
-        } catch (e) {
-            console.warn('[Admin] Profiles location check:', e);
-        }
     }
 
-    // 3. Merge with localStorage (local backups)
+    // 2. Merge with localStorage (local backups for offline / local-auth users)
     try {
         const local = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
         if (Array.isArray(local)) {
             local.forEach(item => {
                 const key = String(item.user_id || item.userId || item.email || '');
                 if (key && !locMap.has(key)) {
-                    locMap.set(key, item);
+                    locMap.set(key, {
+                        ...item,
+                        display_name: item.username || item.email || item.user_id || key
+                    });
                 }
             });
         }
         const singleLoc = JSON.parse(localStorage.getItem('dk_user_location') || 'null');
         if (singleLoc && singleLoc.user_id && !locMap.has(String(singleLoc.user_id))) {
-            locMap.set(String(singleLoc.user_id), singleLoc);
+            locMap.set(String(singleLoc.user_id), {
+                ...singleLoc,
+                display_name: singleLoc.username || singleLoc.email || singleLoc.user_id
+            });
         }
     } catch (_) { }
 
@@ -937,11 +990,21 @@ function renderUserLocationsTable(locations) {
         // Check if there is a matching snapshot for this user
         const matchingSnap = Array.isArray(userSnapshotsData) ? userSnapshotsData.find(s => s.user_id === String(loc.user_id || loc.userId)) : null;
 
+        // Friendly label: prefer phone/email/name over raw UUID
+        const displayId = loc.display_name || loc.username || loc.email ||
+            loc.user_id || loc.userId || 'Anonymous';
+        // If displayId is still a UUID (36-char with dashes), fall back to truncated form
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(displayId);
+        const label = isUuid ? ('User …' + displayId.slice(-8)) : displayId;
+
         tr.innerHTML = `
             <td>
                 <div style="display:flex; align-items:center; gap:8px;">
                     <i class="fas fa-user-circle" style="color:#45f3ff;"></i>
-                    <strong>${loc.user_id || loc.userId || 'Anonymous'}</strong>
+                    <div>
+                        <strong style="display:block;">${label}</strong>
+                        ${loc.email ? `<span style="color:#8e95a5; font-size:0.78rem;">${loc.email}</span>` : ''}
+                    </div>
                 </div>
             </td>
             <td><code style="background:#161924; padding:2px 6px; border-radius:4px; color:#45f3ff;">${lat}</code></td>
