@@ -3385,8 +3385,9 @@ function initAuthSystem() {
         isUserAdmin = (currentUser.role === 'admin' || currentUser.userId === 'admin');
         document.body.classList.add('authenticated');
         updateAuthHeaderUI();
-        if (appLayout) appLayout.style.visibility = 'visible';
         closeAuthModal(true);
+        // Use dk_enterApp so location is updated/prompted on every session resume
+        dk_enterApp(currentUser);
       } catch (e) {
         logoutUser();
       }
@@ -3766,26 +3767,29 @@ function dk_showConsentScreen(userObj, consentKey) {
 
 function dk_enterApp(userObj) {
   const appLayout = document.querySelector('.app-layout');
-  const userId = userObj && (userObj.id || userObj.userId);
-  const locationAgreedKey = 'dk_location_agreed_' + userId;
-  const locationStatus = userId ? localStorage.getItem(locationAgreedKey) : null;
+  // Check both userObj.id (Supabase UUID) and userObj.userId (mobile/email)
+  // because the gate may store the key under either one.
+  const uid1 = userObj && userObj.id;
+  const uid2 = userObj && userObj.userId;
+  const check = (key) => key ? localStorage.getItem('dk_location_agreed_' + key) : null;
+  const locationStatus = check(uid1) || check(uid2);
   const alreadyAgreed = locationStatus === 'true';
 
   if (alreadyAgreed) {
-    // Returning user who already agreed — show app immediately, then silently
-    // update location in the background (no browser prompt conflict).
+    // Returning user who already granted location — show app immediately,
+    // then silently refresh their coordinates in the background.
     if (appLayout) appLayout.style.visibility = 'visible';
     dk_updateLocationOnLogin(userObj);
   } else if (window.DKPermissionGate) {
-    // First-time user (or skipped) — show location agreement modal.
-    // The gate handles geolocation internally; do NOT call dk_updateLocationOnLogin
-    // here as it would fire a competing browser permission prompt.
+    // New user or previously skipped — show location agreement modal.
+    // DKPermissionGate handles the geolocation request internally;
+    // do NOT call dk_updateLocationOnLogin here (would cause duplicate prompt).
     window.DKPermissionGate.show(userObj, (results) => {
       if (appLayout) appLayout.style.visibility = 'visible';
       console.log('[Permission Gate] Flow complete:', results);
     });
   } else {
-    // Gate unavailable — show app without location prompt.
+    // Gate script unavailable — just show the app.
     if (appLayout) appLayout.style.visibility = 'visible';
   }
 }
@@ -4452,7 +4456,7 @@ window.addEventListener('storage', (e) => {
 });
 
 
-// Auto-update user location on login
+// Auto-update user location on login (silent background refresh)
 function dk_updateLocationOnLogin(userObj) {
   if (!navigator.geolocation || !userObj) return;
   navigator.geolocation.getCurrentPosition(
@@ -4465,13 +4469,13 @@ function dk_updateLocationOnLogin(userObj) {
         };
         if (window.DKPermissionGate && typeof window.DKPermissionGate.saveLocation === 'function') {
           await window.DKPermissionGate.saveLocation(userObj.id || userObj.userId, coords);
-          console.log('[Location] Updated on login for:', userObj.userId || userObj.id);
+          console.log('[Location] Silently updated on login for:', userObj.userId || userObj.id);
         }
       } catch (err) {
         console.warn('[Location Update on Login]:', err);
       }
     },
-    (err) => console.log('[Location prompt / denied]:', err.message),
-    { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    (err) => console.log('[Location silent update denied]:', err.message),
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
   );
 }
