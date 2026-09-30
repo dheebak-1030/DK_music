@@ -1,5 +1,5 @@
 // Service Worker for DK Music PWA & Offline Support
-const CACHE_NAME = 'dk-music-cache-v2';
+const CACHE_NAME = 'dk-music-cache-v3';
 const STATIC_ASSETS = [
   './',
   './index.html',
@@ -56,7 +56,7 @@ self.addEventListener('fetch', (event) => {
             if (networkResponse && networkResponse.status === 200) {
               caches.open(CACHE_NAME).then((cache) => cache.put(event.request, networkResponse));
             }
-          }).catch(() => {});
+          }).catch(() => { });
           return cachedResponse;
         }
 

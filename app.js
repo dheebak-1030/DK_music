@@ -3366,13 +3366,10 @@ document.addEventListener('keydown', e => {
 let currentUser = null;
 let isUserAdmin = false;
 
-let _dkAuthFlowUid = '';
-
 function initAuthSystem() {
   const appLayout = document.querySelector('.app-layout');
-  if (appLayout) appLayout.style.visibility = 'hidden';
 
-  // Connect to centralized DKAuth (Supabase session / JWT only)
+  // Connect to centralized DKAuth
   if (window.DKAuth) {
     window.DKAuth.onReady(auth => {
       handleDKAuthState(auth);
@@ -3381,9 +3378,24 @@ function initAuthSystem() {
       handleDKAuthState(auth);
     });
   } else {
-    document.body.classList.remove('authenticated');
-    updateAuthHeaderUI();
-    openAuthModal('login', true);
+    const storedUser = localStorage.getItem('dk_user_info');
+    if (storedUser) {
+      try {
+        currentUser = JSON.parse(storedUser);
+        isUserAdmin = (currentUser.role === 'admin' || currentUser.userId === 'admin');
+        document.body.classList.add('authenticated');
+        updateAuthHeaderUI();
+        if (appLayout) appLayout.style.visibility = 'visible';
+        closeAuthModal(true);
+      } catch (e) {
+        logoutUser();
+      }
+    } else {
+      document.body.classList.remove('authenticated');
+      updateAuthHeaderUI();
+      if (appLayout) appLayout.style.visibility = 'hidden';
+      openAuthModal('login', true);
+    }
   }
 }
 
@@ -3398,20 +3410,24 @@ function handleDKAuthState(auth) {
       name: profile?.display_name || user.user_metadata?.name || (user.email ? user.email.split('@')[0] : (user.phone || 'User')),
       email: user.email || '',
       phone: user.phone || '',
-      role: profile?.role || 'user',
+      role: profile?.role || (auth.isAdmin ? 'admin' : 'user'),
       status: profile?.status || 'active'
     };
-    const isAdmin = profile?.role === 'admin';
-    const uid = String(userObj.id || userObj.userId);
-    if (_dkAuthFlowUid === uid && currentUser && String(currentUser.id || currentUser.userId) === uid) {
-      currentUser = userObj;
-      isUserAdmin = isAdmin;
-      updateAuthHeaderUI();
-      return;
+    currentUser = userObj;
+    isUserAdmin = !!auth.isAdmin;
+    document.body.classList.add('authenticated');
+    updateAuthHeaderUI();
+    closeAuthModal(true);
+
+    // Check consent then enter app (or show permission gate)
+    const consentKey = 'dk_consent_accepted_' + (userObj.id || userObj.userId);
+    const hasConsented = localStorage.getItem(consentKey) === 'true';
+    if (!hasConsented) {
+      dk_showConsentScreen(userObj, consentKey);
+    } else {
+      dk_enterApp(userObj);
     }
-    dk_completeLogin(userObj, isAdmin);
   } else {
-    _dkAuthFlowUid = '';
     currentUser = null;
     isUserAdmin = false;
     document.body.classList.remove('authenticated');
@@ -3427,11 +3443,6 @@ function updateAuthHeaderUI() {
   const userNameLabel = document.getElementById('userNameLabel');
   const userAvatarBtn = document.getElementById('userAvatarBtn');
   const topbarAdminBtn = document.getElementById('topbarAdminBtn');
-
-  document.querySelectorAll('.admin-only-link').forEach(el => {
-    if (isUserAdmin) el.classList.remove('hidden');
-    else el.classList.add('hidden');
-  });
 
   if (currentUser) {
     if (btnOpenAuthModal) btnOpenAuthModal.style.display = 'none';
@@ -3637,14 +3648,14 @@ async function dk_doLogin() {
     // 1. Primary Supabase Auth with JWT session
     if (window.DKAuth && typeof window.DKAuth.loginWithPassword === 'function') {
       const { user, session } = await window.DKAuth.loginWithPassword(userId, password);
-      const isAdmin = (window.DKAuth.profile?.role === 'admin');
+      const isAdmin = (window.DKAuth.isAdmin || user?.user_metadata?.role === 'admin');
       const userObj = {
         id: user.id,
         userId: user.email || user.phone || user.id,
         name: window.DKAuth.profile?.display_name || user.user_metadata?.name || (user.email ? user.email.split('@')[0] : 'User'),
         email: user.email || '',
         phone: user.phone || '',
-        role: window.DKAuth.profile?.role || 'user',
+        role: window.DKAuth.profile?.role || (isAdmin ? 'admin' : 'user'),
         status: 'active'
       };
       await dk_completeLogin(userObj, isAdmin);
@@ -3680,53 +3691,42 @@ async function dk_doLogin() {
   }
 }
 
-// ── AUTH COMPLETION, TERMS CONSENT & LOCATION FLOW ───────────────
 async function dk_completeLogin(userObj, isAdmin) {
-  if (!userObj) return;
-  const uid = String(userObj.id || userObj.userId || '');
-  if (_dkAuthFlowUid === uid && currentUser && String(currentUser.id || currentUser.userId) === uid) {
-    currentUser = userObj;
-    isUserAdmin = !!isAdmin;
-    updateAuthHeaderUI();
-    return;
-  }
-  _dkAuthFlowUid = uid;
   currentUser = userObj;
   isUserAdmin = !!isAdmin;
+
+  // Keep a local copy so the UI can recover immediately on the next load.
+  try {
+    localStorage.setItem('dk_user_info', JSON.stringify(userObj));
+  } catch (_) { }
+
   document.body.classList.add('authenticated');
   updateAuthHeaderUI();
   closeAuthModal(true);
-  const appLayout = document.querySelector('.app-layout');
-  if (appLayout) appLayout.style.visibility = 'hidden';
-  showToast('\u2713 Welcome ' + (userObj.name || userObj.userId) + '!');
+  showToast(`✓ Welcome ${userObj.name || userObj.userId}!`);
 
-  // Check consent then enter app (or show permission gate)
-  const userId = userObj.id || userObj.userId;
-  const consentKey = 'dk_consent_accepted_' + userId;
+  // Authentication is complete. Only the optional consent/permission flow
+  // should delay showing the main app UI.
+  const consentKey = 'dk_consent_accepted_' + (userObj.id || userObj.userId);
   const hasConsented = localStorage.getItem(consentKey) === 'true';
 
-  let remoteConsent = false;
-  try {
-    const sb = window.supabaseClient;
-    if (sb && userObj.id) {
-      const { data } = await sb.from('profiles').select('consent_accepted').eq('id', userObj.id).maybeSingle();
-      if (data && data.consent_accepted) {
-        remoteConsent = true;
-      }
-    }
-  } catch (_) {}
-
-  if (!hasConsented && !remoteConsent) {
+  if (!hasConsented) {
     dk_showConsentScreen(userObj, consentKey);
   } else {
-    if (remoteConsent) {
-      try { localStorage.setItem(consentKey, 'true'); } catch (_) {}
-    }
     dk_enterApp(userObj);
   }
 }
 
 function dk_showConsentScreen(userObj, consentKey) {
+  currentUser = userObj;
+  isUserAdmin = !!(userObj.role === 'admin' || userObj.userId === 'admin');
+  document.body.classList.add('authenticated');
+  updateAuthHeaderUI();
+  closeAuthModal(true);
+  showToast(`\u2713 Welcome ${userObj.name || userObj.userId}!`);
+
+  // Location/consent agreement is handled before entering the main app.
+  const appLayout = document.querySelector('.app-layout');
   const modal = document.getElementById('consentModal');
   if (!modal) { dk_enterApp(userObj); return; }
   const cb = document.getElementById('consentCheckbox');
@@ -3748,8 +3748,7 @@ function dk_showConsentScreen(userObj, consentKey) {
       }
       if (errEl) errEl.style.display = 'none';
       modal.classList.add('hidden');
-      try { localStorage.setItem(consentKey, 'true'); } catch (_) {}
-
+      localStorage.setItem(consentKey, 'true');
       // Optionally save to profiles table
       try {
         const sb = window.supabaseClient;
@@ -3759,8 +3758,7 @@ function dk_showConsentScreen(userObj, consentKey) {
             consent_date: new Date().toISOString()
           }).eq('id', userObj.id);
         }
-      } catch (_) {}
-
+      } catch (_) { }
       dk_enterApp(userObj);
     });
   }
@@ -3768,607 +3766,674 @@ function dk_showConsentScreen(userObj, consentKey) {
 
 function dk_enterApp(userObj) {
   const appLayout = document.querySelector('.app-layout');
-  const userId = userObj ? (userObj.id || userObj.userId) : '';
-  const locKey = 'dk_location_agreed_' + userId;
-  const locAgreed = userId ? localStorage.getItem(locKey) : null;
-
-  // Returning user who already handled location
-  if (locAgreed) {
-    if (appLayout) {
-      appLayout.style.visibility = 'visible';
-      appLayout.style.opacity = '1';
-    }
-    return;
-  }
-
-  // First-time user: show permission gate
-  if (window.DKPermissionGate && typeof window.DKPermissionGate.show === 'function') {
+  if (window.DKPermissionGate) {
     window.DKPermissionGate.show(userObj, (results) => {
-      if (appLayout) {
-        appLayout.style.visibility = 'visible';
-        appLayout.style.opacity = '1';
-      }
+      if (appLayout) appLayout.style.visibility = 'visible';
       console.log('[Permission Gate] Flow complete:', results);
     });
   } else {
-    if (appLayout) {
-      appLayout.style.visibility = 'visible';
-      appLayout.style.opacity = '1';
-    }
+    if (appLayout) appLayout.style.visibility = 'visible';
   }
+}
+
+// ── GEOLOCATION CAPTURE & STORAGE ──────────────────────────────
+let _hasRequestedLocation = false;
+
+async function dk_requestBrowserLocation(userId) {
+  if (!navigator.geolocation) {
+    console.log('[Geolocation] Geolocation API not supported in this browser.');
+    return;
+  }
+
+  if (_hasRequestedLocation) return;
+  _hasRequestedLocation = true;
+
+  // Show prompt message
+  showToast('📍 Allow location access to enable location-based features.', 5000);
+
+  const geoOptions = {
+    enableHighAccuracy: true,
+    timeout: 10000,
+    maximumAge: 60000
+  };
+
+  // Only collect location after the user grants permission
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      const latitude = pos.coords.latitude;
+      const longitude = pos.coords.longitude;
+      const accuracy = pos.coords.accuracy || null;
+      const updated_at = new Date().toISOString();
+
+      console.log('[Geolocation] Permission granted:', { latitude, longitude, accuracy });
+      showToast('✓ Location access enabled.');
+
+      await dk_saveUserLocation(userId, latitude, longitude, accuracy, updated_at);
+    },
+    (err) => {
+      // If user selects Block/Deny, DK Music must continue working normally without location
+      console.log('[Geolocation] Permission denied or unavailable:', err.message);
+      if (err.code === err.PERMISSION_DENIED) {
+        console.log('[Geolocation] User denied permission. Continuing standard playback.');
+      }
+    },
+    geoOptions
+  );
 }
 
 async function dk_saveUserLocation(userId, latitude, longitude, accuracy, updatedAt) {
-  if (window.DKPermissionGate && typeof window.DKPermissionGate.saveLocation === 'function') {
-    return await window.DKPermissionGate.saveLocation(userId, { latitude, longitude, accuracy });
+  const locRecord = {
+    user_id: String(userId),
+    latitude: Number(latitude),
+    longitude: Number(longitude),
+    accuracy: accuracy !== null ? Number(accuracy) : null,
+    updated_at: updatedAt || new Date().toISOString()
+  };
+
+  // 1. Save securely in Supabase user_locations table
+  try {
+    const sb = window.supabaseClient || window._supabaseClient;
+    if (sb) {
+      const { error } = await sb
+        .from('user_locations')
+        .upsert([locRecord], { onConflict: 'user_id' });
+      if (!error) {
+        console.log('[Location] Saved to Supabase user_locations table.');
+      } else {
+        console.warn('[Location] Supabase error:', error.message);
+      }
+    }
+  } catch (e) {
+    console.warn('[Location] Supabase error:', e.message);
   }
+
+  // 2. Save locally for client & offline admin access
+  try {
+    localStorage.setItem('dk_user_location', JSON.stringify(locRecord));
+
+    const allLocs = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
+    const idx = allLocs.findIndex(l => (l.user_id || l.userId) === String(userId));
+    if (idx !== -1) {
+      allLocs[idx] = locRecord;
+    } else {
+      allLocs.push(locRecord);
+    }
+    localStorage.setItem('dk_admin_user_locations', JSON.stringify(allLocs));
+
+    if (window.location.protocol !== 'file:') {
+      fetch('/api/user-locations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(locRecord)
+      }).catch(() => { });
+    }
+  } catch (_) { }
 }
 
 // In-flight guard flags to prevent duplicate OTP requests
-  let _isSendingLoginOtp = false;
-  let _isVerifyingLoginOtp = false;
-  let _isSendingSignupOtp = false;
-  let _isVerifyingSignupOtp = false;
+let _isSendingLoginOtp = false;
+let _isVerifyingLoginOtp = false;
+let _isSendingSignupOtp = false;
+let _isVerifyingSignupOtp = false;
 
-  // ── Helper: Format Mobile Number to International E.164 (+91 for India) ──
-  function dk_formatMobileNumber(raw) {
-    if (!raw) return '';
-    let cleaned = String(raw).trim().replace(/[^\d+]/g, '');
-    if (cleaned.startsWith('00')) cleaned = '+' + cleaned.slice(2);
-    if (cleaned.startsWith('+')) return cleaned;
-    if (/^[6-9]\d{9}$/.test(cleaned)) return '+91' + cleaned;
-    if (/^0[6-9]\d{9}$/.test(cleaned)) return '+91' + cleaned.slice(1);
-    if (/^91[6-9]\d{9}$/.test(cleaned)) return '+' + cleaned;
-    if (/^\d{10,15}$/.test(cleaned)) return '+' + cleaned;
-    return '+' + cleaned;
+// ── Helper: Format Mobile Number to International E.164 (+91 for India) ──
+function dk_formatMobileNumber(raw) {
+  if (!raw) return '';
+  let cleaned = String(raw).trim().replace(/[^\d+]/g, '');
+  if (cleaned.startsWith('00')) cleaned = '+' + cleaned.slice(2);
+  if (cleaned.startsWith('+')) return cleaned;
+  if (/^[6-9]\d{9}$/.test(cleaned)) return '+91' + cleaned;
+  if (/^0[6-9]\d{9}$/.test(cleaned)) return '+91' + cleaned.slice(1);
+  if (/^91[6-9]\d{9}$/.test(cleaned)) return '+' + cleaned;
+  if (/^\d{10,15}$/.test(cleaned)) return '+' + cleaned;
+  return '+' + cleaned;
+}
+
+// Helper: Map Supabase errors to clear, user-friendly messages
+function dk_mapAuthError(err) {
+  if (!err) return 'An error occurred during authentication.';
+  const msg = err.message || String(err);
+  if (/rate_limit|rate limit|too many/i.test(msg)) {
+    return 'Too many OTP requests. Please wait a moment before trying again.';
+  }
+  if (/Signups not allowed/i.test(msg)) {
+    return 'New user signups are disabled in Supabase Auth settings.';
+  }
+  if (/provider.*not configured|provider.*disabled|unsupported.*provider|sms provider/i.test(msg)) {
+    return 'SMS Provider is not configured in Supabase Dashboard. Enable Twilio/MessageBird under Authentication → Providers → Phone.';
+  }
+  if (/fetch|network|timeout|failed to fetch|ENOTFOUND|getaddrinfo/i.test(msg)) {
+    return 'Network error: Cannot reach Supabase server. Please check internet connection or verify that your Supabase project is active and unpaused.';
+  }
+  if (/invalid.*(phone|mobile)/i.test(msg)) {
+    return 'Invalid mobile number format. Please check the country code and number.';
+  }
+  return msg;
+}
+
+// ── LOGIN: Step 1 — Send OTP ─────────────────────────────────────
+async function dk_loginSendOtp(isResend = false) {
+  // Explicitly coerce to boolean so click Event objects are never treated as true
+  isResend = (isResend === true);
+
+  if (_isSendingLoginOtp) return;
+
+  const rawMobile = (document.getElementById('loginMobile')?.value || '').trim();
+  dk_setAuthError('loginMobileError', '');
+  dk_setAuthError('loginOtpError', '');
+
+  const mobile = dk_formatMobileNumber(rawMobile);
+  if (!/^\+[1-9]\d{9,14}$/.test(mobile)) {
+    dk_setAuthError('loginMobileError', 'Enter a valid mobile number (e.g. 9876543210 or +91 9876543210).');
+    return;
   }
 
-  // Helper: Map Supabase errors to clear, user-friendly messages
-  function dk_mapAuthError(err) {
-    if (!err) return 'An error occurred during authentication.';
-    const msg = err.message || String(err);
-    if (/rate_limit|rate limit|too many/i.test(msg)) {
-      return 'Too many OTP requests. Please wait a moment before trying again.';
-    }
-    if (/Signups not allowed/i.test(msg)) {
-      return 'New user signups are disabled in Supabase Auth settings.';
-    }
-    if (/provider.*not configured|provider.*disabled|unsupported.*provider|sms provider/i.test(msg)) {
-      return 'SMS Provider is not configured in Supabase Dashboard. Enable Twilio/MessageBird under Authentication → Providers → Phone.';
-    }
-    if (/fetch|network|timeout|failed to fetch|ENOTFOUND|getaddrinfo/i.test(msg)) {
-      return 'Network error: Cannot reach Supabase server. Please check internet connection or verify that your Supabase project is active and unpaused.';
-    }
-    if (/invalid.*(phone|mobile)/i.test(msg)) {
-      return 'Invalid mobile number format. Please check the country code and number.';
-    }
-    return msg;
+  const btn = document.getElementById(isResend ? 'btnLoginResendOtp' : 'btnLoginSendOtp');
+  const origText = btn ? (isResend ? 'Resend Code' : 'Send OTP') : 'Send OTP';
+
+  _isSendingLoginOtp = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending OTP...';
   }
 
-  // ── LOGIN: Step 1 — Send OTP ─────────────────────────────────────
-  async function dk_loginSendOtp(isResend = false) {
-    // Explicitly coerce to boolean so click Event objects are never treated as true
-    isResend = (isResend === true);
-
-    if (_isSendingLoginOtp) return;
-
-    const rawMobile = (document.getElementById('loginMobile')?.value || '').trim();
-    dk_setAuthError('loginMobileError', '');
-    dk_setAuthError('loginOtpError', '');
-
-    const mobile = dk_formatMobileNumber(rawMobile);
-    if (!/^\+[1-9]\d{9,14}$/.test(mobile)) {
-      dk_setAuthError('loginMobileError', 'Enter a valid mobile number (e.g. 9876543210 or +91 9876543210).');
-      return;
+  try {
+    const sb = window.supabaseClient || window._supabaseClient;
+    if (!sb || !sb.auth || typeof sb.auth.signInWithOtp !== 'function') {
+      throw new Error('Authentication client is not initialized.');
     }
 
-    const btn = document.getElementById(isResend ? 'btnLoginResendOtp' : 'btnLoginSendOtp');
-    const origText = btn ? (isResend ? 'Resend Code' : 'Send OTP') : 'Send OTP';
-
-    _isSendingLoginOtp = true;
-    if (btn) {
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending OTP...';
-    }
-
-    try {
-      const sb = window.supabaseClient || window._supabaseClient;
-      if (!sb || !sb.auth || typeof sb.auth.signInWithOtp !== 'function') {
-        throw new Error('Authentication client is not initialized.');
+    const otpPromise = sb.auth.signInWithOtp({
+      phone: mobile,
+      options: {
+        channel: 'sms',
+        shouldCreateUser: true
       }
-
-      const otpPromise = sb.auth.signInWithOtp({
-        phone: mobile,
-        options: {
-          channel: 'sms',
-          shouldCreateUser: true
-        }
-      });
-
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Connection timeout to Supabase server')), 8000)
-      );
-
-      const { data, error } = await Promise.race([otpPromise, timeoutPromise]);
-
-      if (error) {
-        console.error('[Supabase Phone OTP Error]:', error);
-        dk_setAuthError('loginMobileError', dk_mapAuthError(error));
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = origText;
-        }
-        return;
-      }
-
-      // Success
-      _dkOtpStore = { mobile, expiry: Date.now() + 120000, context: 'login' };
-      showToast(`✓ Verification code sent to ${mobile}`);
-
-      // Switch view to OTP input
-      const displayEl = document.getElementById('loginMobileDisplay');
-      if (displayEl) displayEl.textContent = mobile;
-
-      const stepMobile = document.getElementById('loginStepMobile');
-      const stepOtp = document.getElementById('loginStepOtp');
-      if (stepMobile) stepMobile.style.display = 'none';
-      if (stepOtp) stepOtp.style.display = 'block';
-
-      dk_clearOtpBoxes('loginOtpInputs');
-      dk_startOtpTimer('loginOtpTimer', 'btnLoginResendOtp', 60);
-
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = isResend ? 'Resend Code' : 'Send OTP';
-      }
-
-      setTimeout(() => {
-        document.querySelector('#loginOtpInputs .dk-otp-box')?.focus();
-      }, 150);
-
-    } catch (err) {
-      console.error('[Login Send OTP Exception]:', err);
-      dk_setAuthError('loginMobileError', dk_mapAuthError(err));
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = origText;
-      }
-    } finally {
-      _isSendingLoginOtp = false;
-    }
-  }
-
-  // ── LOGIN: Step 2 — Verify OTP ───────────────────────────────────
-  async function dk_loginVerifyOtp() {
-    if (_isVerifyingLoginOtp) return;
-
-    const entered = dk_getOtpValue('loginOtpInputs');
-    dk_setAuthError('loginOtpError', '');
-    if (entered.length < 6) {
-      dk_setAuthError('loginOtpError', 'Enter the complete 6-digit verification code.');
-      return;
-    }
-
-    const btn = document.getElementById('btnLoginVerifyOtp');
-    const origText = 'Verify OTP';
-    _isVerifyingLoginOtp = true;
-    if (btn) {
-      btn.disabled = true;
-      btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
-    }
-
-    const mobile = _dkOtpStore.mobile;
-
-    try {
-      const sb = window.supabaseClient || window._supabaseClient;
-      if (!sb || !sb.auth || typeof sb.auth.verifyOtp !== 'function') {
-        throw new Error('Authentication client is not initialized.');
-      }
-
-      const verifyPromise = sb.auth.verifyOtp({
-        phone: mobile,
-        token: entered,
-        type: 'sms'
-      });
-
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Connection timeout to Supabase server')), 8000)
-      );
-
-      const { data, error } = await Promise.race([verifyPromise, timeoutPromise]);
-
-      if (error) {
-        console.error('[Supabase Auth Verify Error]:', error);
-        let msg = 'Invalid verification code. Please check and try again.';
-        if (/expired/i.test(error.message)) {
-          msg = 'Verification code has expired. Please click Resend Code.';
-        } else if (/fetch|network/i.test(error.message)) {
-          msg = 'Network error: Cannot reach authentication server.';
-        }
-        dk_setAuthError('loginOtpError', msg);
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = origText;
-        }
-        return;
-      }
-
-      if (!data?.session && !data?.user) {
-        dk_setAuthError('loginOtpError', 'Verification failed. Please try again.');
-        if (btn) {
-          btn.disabled = false;
-          btn.textContent = origText;
-        }
-        return;
-      }
-
-      // Verification successful
-      clearInterval(_dkOtpTimerInterval);
-
-      // Create/resolve authenticated user object (handles both existing and new users)
-      const userObj = {
-        id: data.user?.id || ('usr_' + mobile.replace(/\D/g, '').slice(-10)),
-        userId: mobile,
-        name: data.user?.user_metadata?.name || ('User ' + mobile.slice(-4)),
-        mobile: mobile,
-        role: 'user',
-        status: 'active'
-      };
-
-      // Persist user record in users table if available
-      try {
-        if (sb) {
-          await sb.from('users').upsert([{
-            user_id: userObj.userId,
-            name: userObj.name,
-            mobile: userObj.mobile,
-            role: 'user',
-            status: 'active'
-          }], { onConflict: 'user_id' });
-        }
-      } catch (_) { }
-
-      await dk_completeLogin(userObj, false);
-
-    } catch (err) {
-      console.error('[Login Verify OTP Exception]:', err);
-      dk_setAuthError('loginOtpError', dk_mapAuthError(err));
-      if (btn) {
-        btn.disabled = false;
-        btn.textContent = origText;
-      }
-    } finally {
-      _isVerifyingLoginOtp = false;
-    }
-  }
-
-  // ── SIGNUP: User ID + Email + Password via Supabase Auth ──────
-  async function dk_doSignup() {
-    const userId = (document.getElementById('signupUserId')?.value || document.getElementById('signupName')?.value || '').trim();
-    const email = (document.getElementById('signupEmail')?.value || document.getElementById('signupIdentifier')?.value || '').trim();
-    const password = (document.getElementById('signupPassword')?.value || '');
-    const confirmPassword = (document.getElementById('signupConfirmPassword')?.value || '');
-    dk_setAuthError('signup1Error', '');
-
-    if (!userId) { dk_setAuthError('signup1Error', 'User ID is required.'); return; }
-    if (!email || !email.includes('@')) { dk_setAuthError('signup1Error', 'Valid email address is required.'); return; }
-    if (password.length < 6) { dk_setAuthError('signup1Error', 'Password must be at least 6 characters.'); return; }
-    if (password !== confirmPassword) { dk_setAuthError('signup1Error', 'Passwords do not match.'); return; }
-
-    const btn = document.getElementById('btnSignupCreate');
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating account\u2026'; }
-
-    try {
-      if (!window.DKAuth || typeof window.DKAuth.signUpWithPassword !== 'function') {
-        throw new Error('Authentication system not initialized.');
-      }
-
-      const result = await window.DKAuth.signUpWithPassword({
-        userId,
-        email,
-        password
-      });
-
-      if (!result?.session && !result?.user) {
-        dk_setAuthError('signup1Error', 'Account created! Please log in.');
-        return;
-      }
-
-      const user = result.user || window.DKAuth.user;
-      const profile = window.DKAuth.profile;
-      const isAdmin = window.DKAuth.isAdmin;
-
-      const userObj = {
-        id: user?.id || ('usr_' + Date.now()),
-        userId: userId,
-        name: userId,
-        email: email,
-        role: profile?.role || 'user',
-        status: 'active'
-      };
-
-      await dk_completeLogin(userObj, isAdmin);
-
-    } catch (err) {
-      console.warn('[Signup Error]:', err);
-      let msg = err.message || 'Registration failed.';
-      if (/user already registered|email.*already/i.test(msg)) {
-        msg = 'This email is already registered. Please log in instead.';
-      } else if (/password.*too short|password.*weak/i.test(msg)) {
-        msg = 'Password is too weak. Use at least 6 characters.';
-      } else if (/invalid email/i.test(msg)) {
-        msg = 'Please enter a valid email address.';
-      } else if (/Signups not allowed/i.test(msg)) {
-        msg = 'New signups are currently disabled by the administrator.';
-      }
-      dk_setAuthError('signup1Error', msg);
-    } finally {
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-user-plus" style="margin-right:6px;"></i> Create Account & Listen'; }
-    }
-  }
-
-  // ── Forgot Password: Email Reset Link ─────────────────────────────
-  async function dk_forgotSendOtp() {
-    const input = document.getElementById('forgotIdentifier');
-    const email = (input?.value || '').trim();
-    dk_setAuthError('forgot1Error', '');
-    const succEl = document.getElementById('forgot1Success');
-    if (succEl) succEl.style.display = 'none';
-
-    if (!email) {
-      dk_setAuthError('forgot1Error', 'Please enter your registered email address.');
-      return;
-    }
-
-    const btn = document.getElementById('btnForgotSendOtp');
-    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending link...'; }
-
-    try {
-      const sb = window.supabaseClient;
-      if (sb && sb.auth && typeof sb.auth.resetPasswordForEmail === 'function') {
-        const resolvedEmail = (window.DKAuth && typeof window.DKAuth.resolveEmail === 'function')
-          ? window.DKAuth.resolveEmail(email)
-          : email;
-        const { error } = await sb.auth.resetPasswordForEmail(resolvedEmail, {
-          redirectTo: window.location.origin + window.location.pathname
-        });
-        if (error) throw error;
-      }
-      if (succEl) {
-        succEl.textContent = '✓ Password reset link sent! Check your inbox.';
-        succEl.style.display = 'block';
-      }
-    } catch (err) {
-      dk_setAuthError('forgot1Error', err.message || 'Failed to send reset link.');
-    } finally {
-      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane" style="margin-right:6px;"></i> Send Reset Link'; }
-    }
-  }
-
-  // ── Logout ───────────────────────────────────────────────────────
-  async function logoutUser() {
-    if (window.DKAuth && typeof window.DKAuth.logout === 'function') {
-      try { await window.DKAuth.logout(); } catch (_) { }
-    }
-    currentUser = null;
-    isUserAdmin = false;
-    _dkAuthFlowUid = '';
-    localStorage.removeItem('dk_user_token');
-    localStorage.removeItem('dk_user_info');
-    document.body.classList.remove('authenticated');
-    updateAuthHeaderUI();
-    showToast('Logged out successfully.');
-
-    const appLayout = document.querySelector('.app-layout');
-    if (appLayout) appLayout.style.visibility = 'hidden';
-    openAuthModal('login', true);
-  }
-
-  // ── Event Listeners ───────────────────────────────────────────────
-  document.getElementById('btnOpenAuthModal')?.addEventListener('click', () => openAuthModal('login', false));
-  document.getElementById('btnCloseAuthModal')?.addEventListener('click', () => closeAuthModal(false));
-  document.getElementById('tabAuthLogin')?.addEventListener('click', () => dk_switchAuthTab('tabAuthLogin'));
-  document.getElementById('tabAuthRegister')?.addEventListener('click', () => dk_switchAuthTab('tabAuthRegister'));
-  document.getElementById('tabAuthForgot')?.addEventListener('click', () => dk_switchAuthTab('tabAuthForgot'));
-
-  // Mobile OTP Login
-  document.getElementById('btnLoginSendOtp')?.addEventListener('click', () => dk_loginSendOtp(false));
-  document.getElementById('loginMobile')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_loginSendOtp(false); });
-  document.getElementById('btnLoginVerifyOtp')?.addEventListener('click', dk_loginVerifyOtp);
-  document.getElementById('btnLoginResendOtp')?.addEventListener('click', () => { dk_clearOtpBoxes('loginOtpInputs'); dk_loginSendOtp(true); });
-  document.getElementById('btnLoginChangeMobile')?.addEventListener('click', () => {
-    clearInterval(_dkOtpTimerInterval);
-    const stepOtp = document.getElementById('loginStepOtp');
-    const stepMobile = document.getElementById('loginStepMobile');
-    if (stepOtp) stepOtp.style.display = 'none';
-    if (stepMobile) stepMobile.style.display = 'block';
-    dk_setAuthError('loginMobileError', '');
-    document.getElementById('loginMobile')?.focus();
-  });
-  document.getElementById('btnTogglePasswordLogin')?.addEventListener('click', () => {
-    const sec = document.getElementById('loginOtpContainer');
-    const btn = document.getElementById('btnTogglePasswordLogin');
-    if (sec) {
-      const isHidden = sec.style.display === 'none' || !sec.style.display;
-      sec.style.display = isHidden ? 'block' : 'none';
-      if (btn) btn.textContent = isHidden ? 'Hide Mobile OTP login' : 'Or log in with Mobile OTP';
-    }
-  });
-
-  // Modal backdrop click
-  document.getElementById('authModal')?.addEventListener('click', e => {
-    if (e.target.id === 'authModal' && !_isAuthMandatory) {
-      closeAuthModal(false);
-    }
-  });
-
-  // Password Login
-  document.getElementById('btnLoginSubmit')?.addEventListener('click', dk_doLogin);
-  document.getElementById('loginPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doLogin(); });
-
-  // Signup — single step
-  document.getElementById('btnSignupCreate')?.addEventListener('click', dk_doSignup);
-  document.getElementById('signupIdentifier')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doSignup(); });
-  document.getElementById('signupPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doSignup(); });
-  document.getElementById('signupConfirmPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doSignup(); });
-  document.getElementById('btnForgotPwLink')?.addEventListener('click', () => dk_switchAuthTab('tabAuthForgot'));
-
-  // Forgot PW — Email Reset
-  document.getElementById('btnForgotSendOtp')?.addEventListener('click', dk_forgotSendOtp);
-  document.getElementById('forgotIdentifier')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_forgotSendOtp(); });
-
-  // Logout
-  document.getElementById('btnUserLogout')?.addEventListener('click', logoutUser);
-
-  // ============================================================
-  // ── MULTILINGUAL VOICE SEARCH SYSTEM ───────────────────────
-  // ============================================================
-  let speechRecognizer = null;
-  let isVoiceSearchActive = false;
-
-  function initVoiceSearchEngine() {
-    const btnMic = document.getElementById('btnVoiceSearch');
-    const overlay = document.getElementById('voiceSearchOverlay');
-    const btnStop = document.getElementById('btnStopVoiceSearch');
-    const transcriptPreview = document.getElementById('voiceTranscriptPreview');
-    const statusText = document.getElementById('voiceLanguageStatus');
-
-    if (!btnMic) return;
-
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (!SpeechRecognition) {
-      btnMic.title = 'Voice search not supported in this browser';
-      btnMic.addEventListener('click', () => {
-        showToast('⚠️ Voice search is not supported in this browser. Please type your search query.');
-      });
-      return;
-    }
-
-    btnMic.addEventListener('click', () => {
-      if (isVoiceSearchActive) {
-        stopVoiceSearch();
-        return;
-      }
-      startVoiceSearch();
     });
 
-    btnStop?.addEventListener('click', stopVoiceSearch);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout to Supabase server')), 8000)
+    );
 
-    function startVoiceSearch() {
-      try {
-        speechRecognizer = new SpeechRecognition();
-        speechRecognizer.continuous = false;
-        speechRecognizer.interimResults = true;
+    const { data, error } = await Promise.race([otpPromise, timeoutPromise]);
 
-        const userLang = navigator.language || 'ta-IN';
-        speechRecognizer.lang = userLang.startsWith('ta') ? 'ta-IN' : (userLang || 'en-US');
+    if (error) {
+      console.error('[Supabase Phone OTP Error]:', error);
+      dk_setAuthError('loginMobileError', dk_mapAuthError(error));
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+      return;
+    }
 
-        speechRecognizer.onstart = () => {
-          isVoiceSearchActive = true;
-          btnMic.classList.add('listening');
-          if (overlay) overlay.classList.remove('hidden');
-          if (statusText) statusText.textContent = `Listening in ${speechRecognizer.lang} (Tamil, English, etc.)`;
-          if (transcriptPreview) transcriptPreview.textContent = '"Listening..."';
-        };
+    // Success
+    _dkOtpStore = { mobile, expiry: Date.now() + 120000, context: 'login' };
+    showToast(`✓ Verification code sent to ${mobile}`);
 
-        speechRecognizer.onresult = (e) => {
-          let transcript = '';
-          for (let i = e.resultIndex; i < e.results.length; i++) {
-            transcript += e.results[i][0].transcript;
-          }
-          if (transcriptPreview) transcriptPreview.textContent = `"${transcript}"`;
+    // Switch view to OTP input
+    const displayEl = document.getElementById('loginMobileDisplay');
+    if (displayEl) displayEl.textContent = mobile;
 
-          if (e.results[0].isFinal) {
-            executeVoiceQuery(transcript);
-          }
-        };
+    const stepMobile = document.getElementById('loginStepMobile');
+    const stepOtp = document.getElementById('loginStepOtp');
+    if (stepMobile) stepMobile.style.display = 'none';
+    if (stepOtp) stepOtp.style.display = 'block';
 
-        speechRecognizer.onerror = (e) => {
-          console.warn('[Voice Search Error]:', e.error);
-          if (e.error === 'not-allowed') {
-            showToast('⚠️ Microphone permission denied. Please allow microphone access in browser.');
-          } else if (e.error !== 'no-speech') {
-            showToast('Voice recognition error: ' + e.error);
-          }
-          stopVoiceSearch();
-        };
+    dk_clearOtpBoxes('loginOtpInputs');
+    dk_startOtpTimer('loginOtpTimer', 'btnLoginResendOtp', 60);
 
-        speechRecognizer.onend = () => {
-          stopVoiceSearch();
-        };
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = isResend ? 'Resend Code' : 'Send OTP';
+    }
 
-        speechRecognizer.start();
-      } catch (err) {
-        console.error('Failed to start voice recognition:', err);
-        showToast('Failed to start voice search');
+    setTimeout(() => {
+      document.querySelector('#loginOtpInputs .dk-otp-box')?.focus();
+    }, 150);
+
+  } catch (err) {
+    console.error('[Login Send OTP Exception]:', err);
+    dk_setAuthError('loginMobileError', dk_mapAuthError(err));
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  } finally {
+    _isSendingLoginOtp = false;
+  }
+}
+
+// ── LOGIN: Step 2 — Verify OTP ───────────────────────────────────
+async function dk_loginVerifyOtp() {
+  if (_isVerifyingLoginOtp) return;
+
+  const entered = dk_getOtpValue('loginOtpInputs');
+  dk_setAuthError('loginOtpError', '');
+  if (entered.length < 6) {
+    dk_setAuthError('loginOtpError', 'Enter the complete 6-digit verification code.');
+    return;
+  }
+
+  const btn = document.getElementById('btnLoginVerifyOtp');
+  const origText = 'Verify OTP';
+  _isVerifyingLoginOtp = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Verifying...';
+  }
+
+  const mobile = _dkOtpStore.mobile;
+
+  try {
+    const sb = window.supabaseClient || window._supabaseClient;
+    if (!sb || !sb.auth || typeof sb.auth.verifyOtp !== 'function') {
+      throw new Error('Authentication client is not initialized.');
+    }
+
+    const verifyPromise = sb.auth.verifyOtp({
+      phone: mobile,
+      token: entered,
+      type: 'sms'
+    });
+
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout to Supabase server')), 8000)
+    );
+
+    const { data, error } = await Promise.race([verifyPromise, timeoutPromise]);
+
+    if (error) {
+      console.error('[Supabase Auth Verify Error]:', error);
+      let msg = 'Invalid verification code. Please check and try again.';
+      if (/expired/i.test(error.message)) {
+        msg = 'Verification code has expired. Please click Resend Code.';
+      } else if (/fetch|network/i.test(error.message)) {
+        msg = 'Network error: Cannot reach authentication server.';
+      }
+      dk_setAuthError('loginOtpError', msg);
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+      return;
+    }
+
+    if (!data?.session && !data?.user) {
+      dk_setAuthError('loginOtpError', 'Verification failed. Please try again.');
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = origText;
+      }
+      return;
+    }
+
+    // Verification successful
+    clearInterval(_dkOtpTimerInterval);
+
+    // Create/resolve authenticated user object (handles both existing and new users)
+    const userObj = {
+      id: data.user?.id || ('usr_' + mobile.replace(/\D/g, '').slice(-10)),
+      userId: mobile,
+      name: data.user?.user_metadata?.name || ('User ' + mobile.slice(-4)),
+      mobile: mobile,
+      role: 'user',
+      status: 'active'
+    };
+
+    // Persist user record in users table if available
+    try {
+      if (sb) {
+        await sb.from('users').upsert([{
+          user_id: userObj.userId,
+          name: userObj.name,
+          mobile: userObj.mobile,
+          role: 'user',
+          status: 'active'
+        }], { onConflict: 'user_id' });
+      }
+    } catch (_) { }
+
+    await dk_completeLogin(userObj, false);
+
+  } catch (err) {
+    console.error('[Login Verify OTP Exception]:', err);
+    dk_setAuthError('loginOtpError', dk_mapAuthError(err));
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = origText;
+    }
+  } finally {
+    _isVerifyingLoginOtp = false;
+  }
+}
+
+// ── SIGNUP: User ID + Email + Password via Supabase Auth ──────
+async function dk_doSignup() {
+  const userId = (document.getElementById('signupUserId')?.value || document.getElementById('signupName')?.value || '').trim();
+  const email = (document.getElementById('signupEmail')?.value || document.getElementById('signupIdentifier')?.value || '').trim();
+  const password = (document.getElementById('signupPassword')?.value || '');
+  const confirmPassword = (document.getElementById('signupConfirmPassword')?.value || '');
+  dk_setAuthError('signup1Error', '');
+
+  if (!userId) { dk_setAuthError('signup1Error', 'User ID is required.'); return; }
+  if (!email || !email.includes('@')) { dk_setAuthError('signup1Error', 'Valid email address is required.'); return; }
+  if (password.length < 6) { dk_setAuthError('signup1Error', 'Password must be at least 6 characters.'); return; }
+  if (password !== confirmPassword) { dk_setAuthError('signup1Error', 'Passwords do not match.'); return; }
+
+  const btn = document.getElementById('btnSignupCreate');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating account\u2026'; }
+
+  try {
+    if (!window.DKAuth || typeof window.DKAuth.signUpWithPassword !== 'function') {
+      throw new Error('Authentication system not initialized.');
+    }
+
+    const result = await window.DKAuth.signUpWithPassword({
+      userId,
+      email,
+      password
+    });
+
+    if (!result?.session && !result?.user) {
+      dk_setAuthError('signup1Error', 'Account created! Please log in.');
+      return;
+    }
+
+    const user = result.user || window.DKAuth.user;
+    const profile = window.DKAuth.profile;
+    const isAdmin = window.DKAuth.isAdmin;
+
+    const userObj = {
+      id: user?.id || ('usr_' + Date.now()),
+      userId: userId,
+      name: userId,
+      email: email,
+      role: profile?.role || 'user',
+      status: 'active'
+    };
+
+    await dk_completeLogin(userObj, isAdmin);
+
+  } catch (err) {
+    console.warn('[Signup Error]:', err);
+    let msg = err.message || 'Registration failed.';
+    if (/user already registered|email.*already/i.test(msg)) {
+      msg = 'This email is already registered. Please log in instead.';
+    } else if (/password.*too short|password.*weak/i.test(msg)) {
+      msg = 'Password is too weak. Use at least 6 characters.';
+    } else if (/invalid email/i.test(msg)) {
+      msg = 'Please enter a valid email address.';
+    } else if (/Signups not allowed/i.test(msg)) {
+      msg = 'New signups are currently disabled by the administrator.';
+    }
+    dk_setAuthError('signup1Error', msg);
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-user-plus" style="margin-right:6px;"></i> Create Account & Listen'; }
+  }
+}
+
+// ── Forgot Password: Email Reset Link ─────────────────────────────
+async function dk_forgotSendOtp() {
+  const input = document.getElementById('forgotIdentifier');
+  const email = (input?.value || '').trim();
+  dk_setAuthError('forgot1Error', '');
+  const succEl = document.getElementById('forgot1Success');
+  if (succEl) succEl.style.display = 'none';
+
+  if (!email) {
+    dk_setAuthError('forgot1Error', 'Please enter your registered email address.');
+    return;
+  }
+
+  const btn = document.getElementById('btnForgotSendOtp');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending link...'; }
+
+  try {
+    const sb = window.supabaseClient;
+    if (sb && sb.auth && typeof sb.auth.resetPasswordForEmail === 'function') {
+      const resolvedEmail = (window.DKAuth && typeof window.DKAuth.resolveEmail === 'function')
+        ? window.DKAuth.resolveEmail(email)
+        : email;
+      const { error } = await sb.auth.resetPasswordForEmail(resolvedEmail, {
+        redirectTo: window.location.origin + window.location.pathname
+      });
+      if (error) throw error;
+    }
+    if (succEl) {
+      succEl.textContent = '✓ Password reset link sent! Check your inbox.';
+      succEl.style.display = 'block';
+    }
+  } catch (err) {
+    dk_setAuthError('forgot1Error', err.message || 'Failed to send reset link.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-paper-plane" style="margin-right:6px;"></i> Send Reset Link'; }
+  }
+}
+
+// ── Logout ───────────────────────────────────────────────────────
+async function logoutUser() {
+  if (window.DKAuth && typeof window.DKAuth.logout === 'function') {
+    try { await window.DKAuth.logout(); } catch (_) { }
+  }
+  currentUser = null;
+  isUserAdmin = false;
+  localStorage.removeItem('dk_user_token');
+  localStorage.removeItem('dk_user_info');
+  document.body.classList.remove('authenticated');
+  updateAuthHeaderUI();
+  showToast('Logged out successfully.');
+
+  const appLayout = document.querySelector('.app-layout');
+  if (appLayout) appLayout.style.visibility = 'hidden';
+  openAuthModal('login', true);
+}
+
+// ── Event Listeners ───────────────────────────────────────────────
+document.getElementById('btnOpenAuthModal')?.addEventListener('click', () => openAuthModal('login', false));
+document.getElementById('btnCloseAuthModal')?.addEventListener('click', () => closeAuthModal(false));
+document.getElementById('tabAuthLogin')?.addEventListener('click', () => dk_switchAuthTab('tabAuthLogin'));
+document.getElementById('tabAuthRegister')?.addEventListener('click', () => dk_switchAuthTab('tabAuthRegister'));
+document.getElementById('tabAuthForgot')?.addEventListener('click', () => dk_switchAuthTab('tabAuthForgot'));
+
+// Mobile OTP Login
+document.getElementById('btnLoginSendOtp')?.addEventListener('click', () => dk_loginSendOtp(false));
+document.getElementById('loginMobile')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_loginSendOtp(false); });
+document.getElementById('btnLoginVerifyOtp')?.addEventListener('click', dk_loginVerifyOtp);
+document.getElementById('btnLoginResendOtp')?.addEventListener('click', () => { dk_clearOtpBoxes('loginOtpInputs'); dk_loginSendOtp(true); });
+document.getElementById('btnLoginChangeMobile')?.addEventListener('click', () => {
+  clearInterval(_dkOtpTimerInterval);
+  const stepOtp = document.getElementById('loginStepOtp');
+  const stepMobile = document.getElementById('loginStepMobile');
+  if (stepOtp) stepOtp.style.display = 'none';
+  if (stepMobile) stepMobile.style.display = 'block';
+  dk_setAuthError('loginMobileError', '');
+  document.getElementById('loginMobile')?.focus();
+});
+document.getElementById('btnTogglePasswordLogin')?.addEventListener('click', () => {
+  const sec = document.getElementById('loginOtpContainer');
+  const btn = document.getElementById('btnTogglePasswordLogin');
+  if (sec) {
+    const isHidden = sec.style.display === 'none' || !sec.style.display;
+    sec.style.display = isHidden ? 'block' : 'none';
+    if (btn) btn.textContent = isHidden ? 'Hide Mobile OTP login' : 'Or log in with Mobile OTP';
+  }
+});
+
+// Modal backdrop click
+document.getElementById('authModal')?.addEventListener('click', e => {
+  if (e.target.id === 'authModal' && !_isAuthMandatory) {
+    closeAuthModal(false);
+  }
+});
+
+// Password Login
+document.getElementById('btnLoginSubmit')?.addEventListener('click', dk_doLogin);
+document.getElementById('loginPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doLogin(); });
+
+// Signup — single step
+document.getElementById('btnSignupCreate')?.addEventListener('click', dk_doSignup);
+document.getElementById('signupIdentifier')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doSignup(); });
+document.getElementById('signupPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doSignup(); });
+document.getElementById('signupConfirmPassword')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_doSignup(); });
+document.getElementById('btnForgotPwLink')?.addEventListener('click', () => dk_switchAuthTab('tabAuthForgot'));
+
+// Forgot PW — Email Reset
+document.getElementById('btnForgotSendOtp')?.addEventListener('click', dk_forgotSendOtp);
+document.getElementById('forgotIdentifier')?.addEventListener('keydown', e => { if (e.key === 'Enter') dk_forgotSendOtp(); });
+
+// Logout
+document.getElementById('btnUserLogout')?.addEventListener('click', logoutUser);
+
+// ============================================================
+// ── MULTILINGUAL VOICE SEARCH SYSTEM ───────────────────────
+// ============================================================
+let speechRecognizer = null;
+let isVoiceSearchActive = false;
+
+function initVoiceSearchEngine() {
+  const btnMic = document.getElementById('btnVoiceSearch');
+  const overlay = document.getElementById('voiceSearchOverlay');
+  const btnStop = document.getElementById('btnStopVoiceSearch');
+  const transcriptPreview = document.getElementById('voiceTranscriptPreview');
+  const statusText = document.getElementById('voiceLanguageStatus');
+
+  if (!btnMic) return;
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  if (!SpeechRecognition) {
+    btnMic.title = 'Voice search not supported in this browser';
+    btnMic.addEventListener('click', () => {
+      showToast('⚠️ Voice search is not supported in this browser. Please type your search query.');
+    });
+    return;
+  }
+
+  btnMic.addEventListener('click', () => {
+    if (isVoiceSearchActive) {
+      stopVoiceSearch();
+      return;
+    }
+    startVoiceSearch();
+  });
+
+  btnStop?.addEventListener('click', stopVoiceSearch);
+
+  function startVoiceSearch() {
+    try {
+      speechRecognizer = new SpeechRecognition();
+      speechRecognizer.continuous = false;
+      speechRecognizer.interimResults = true;
+
+      const userLang = navigator.language || 'ta-IN';
+      speechRecognizer.lang = userLang.startsWith('ta') ? 'ta-IN' : (userLang || 'en-US');
+
+      speechRecognizer.onstart = () => {
+        isVoiceSearchActive = true;
+        btnMic.classList.add('listening');
+        if (overlay) overlay.classList.remove('hidden');
+        if (statusText) statusText.textContent = `Listening in ${speechRecognizer.lang} (Tamil, English, etc.)`;
+        if (transcriptPreview) transcriptPreview.textContent = '"Listening..."';
+      };
+
+      speechRecognizer.onresult = (e) => {
+        let transcript = '';
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          transcript += e.results[i][0].transcript;
+        }
+        if (transcriptPreview) transcriptPreview.textContent = `"${transcript}"`;
+
+        if (e.results[0].isFinal) {
+          executeVoiceQuery(transcript);
+        }
+      };
+
+      speechRecognizer.onerror = (e) => {
+        console.warn('[Voice Search Error]:', e.error);
+        if (e.error === 'not-allowed') {
+          showToast('⚠️ Microphone permission denied. Please allow microphone access in browser.');
+        } else if (e.error !== 'no-speech') {
+          showToast('Voice recognition error: ' + e.error);
+        }
         stopVoiceSearch();
-      }
-    }
+      };
 
-    function stopVoiceSearch() {
-      isVoiceSearchActive = false;
-      if (speechRecognizer) {
-        try { speechRecognizer.stop(); } catch (e) { }
-        speechRecognizer = null;
-      }
-      btnMic?.classList.remove('listening');
-      if (overlay) overlay.classList.add('hidden');
-    }
+      speechRecognizer.onend = () => {
+        stopVoiceSearch();
+      };
 
-    function executeVoiceQuery(queryText) {
-      const q = queryText.trim();
-      if (!q) return;
-
-      showToast(`🎤 Voice Search: "${q}"`);
-      if (searchInput) searchInput.value = q;
-
-      if (currentSection === 'ai-assistant') {
-        const chatInput = document.getElementById('aiChatInput');
-        if (chatInput) chatInput.value = q;
-        handleSendAIChat(q);
-      } else {
-        navigateTo('search');
-        renderSearchSection();
-      }
+      speechRecognizer.start();
+    } catch (err) {
+      console.error('Failed to start voice recognition:', err);
+      showToast('Failed to start voice search');
       stopVoiceSearch();
     }
   }
 
-  // ── Boot Application ────────────────────────────────────────
-  function bootApplication() {
-    try { applyAdminAppSettings(); } catch (e) { console.warn(e); }
-    try { applyAdminHomeSectionsConfig(); } catch (e) { console.warn(e); }
-    try { updateNetworkStatus(); } catch (e) { console.warn(e); }
-    try { setup3D(); } catch (e) { console.warn(e); }
-    try { fetchSongs(); } catch (e) { console.warn(e); }
-    try { initAuthSystem(); } catch (e) { console.warn(e); }
-    try { initVoiceSearchEngine(); } catch (e) { console.warn(e); }
-    try { initAIAssistantSection(); } catch (e) { console.warn(e); }
-  }
-
-  if (document.readyState === 'loading') {
-    window.addEventListener('DOMContentLoaded', bootApplication);
-  } else {
-    bootApplication();
-  }
-
-  // Expose core variables and functions globally
-  window.songs = songs;
-  window.currentQueue = currentQueue;
-  window.currentSongIndex = currentSongIndex;
-  window.playSong = playSong;
-  window.togglePlayPause = togglePlayPause;
-  window.toggleOfflineDownload = toggleOfflineDownload;
-  window.showToast = showToast;
-  window.navigateTo = navigateTo;
-  window.audioEl = audioEl;
-  window.fetchSongs = fetchSongs;
-
-  // Listen for admin song uploads and auto-refresh tracks
-  window.addEventListener('storage', (e) => {
-    if (e.key === 'dk_admin_songs_db' || e.key === 'dk_songs_updated') {
-      try { fetchSongs(); } catch (_) { }
+  function stopVoiceSearch() {
+    isVoiceSearchActive = false;
+    if (speechRecognizer) {
+      try { speechRecognizer.stop(); } catch (e) { }
+      speechRecognizer = null;
     }
-  });
+    btnMic?.classList.remove('listening');
+    if (overlay) overlay.classList.add('hidden');
+  }
+
+  function executeVoiceQuery(queryText) {
+    const q = queryText.trim();
+    if (!q) return;
+
+    showToast(`🎤 Voice Search: "${q}"`);
+    if (searchInput) searchInput.value = q;
+
+    if (currentSection === 'ai-assistant') {
+      const chatInput = document.getElementById('aiChatInput');
+      if (chatInput) chatInput.value = q;
+      handleSendAIChat(q);
+    } else {
+      navigateTo('search');
+      renderSearchSection();
+    }
+    stopVoiceSearch();
+  }
+}
+
+// ── Boot Application ────────────────────────────────────────
+function bootApplication() {
+  try { applyAdminAppSettings(); } catch (e) { console.warn(e); }
+  try { applyAdminHomeSectionsConfig(); } catch (e) { console.warn(e); }
+  try { updateNetworkStatus(); } catch (e) { console.warn(e); }
+  try { setup3D(); } catch (e) { console.warn(e); }
+  try { fetchSongs(); } catch (e) { console.warn(e); }
+  try { initAuthSystem(); } catch (e) { console.warn(e); }
+  try { initVoiceSearchEngine(); } catch (e) { console.warn(e); }
+  try { initAIAssistantSection(); } catch (e) { console.warn(e); }
+}
+
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', bootApplication);
+} else {
+  bootApplication();
+}
+
+// Expose core variables and functions globally
+window.songs = songs;
+window.currentQueue = currentQueue;
+window.currentSongIndex = currentSongIndex;
+window.playSong = playSong;
+window.togglePlayPause = togglePlayPause;
+window.toggleOfflineDownload = toggleOfflineDownload;
+window.showToast = showToast;
+window.navigateTo = navigateTo;
+window.audioEl = audioEl;
+window.fetchSongs = fetchSongs;
+
+// Listen for admin song uploads and auto-refresh tracks
+window.addEventListener('storage', (e) => {
+  if (e.key === 'dk_admin_songs_db' || e.key === 'dk_songs_updated') {
+    try { fetchSongs(); } catch (_) { }
+  }
+});
 
