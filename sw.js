@@ -1,5 +1,5 @@
 // Service Worker for DK Music PWA & Offline Support
-const CACHE_NAME = 'dk-music-cache-v5';
+const CACHE_NAME = 'dk-music-cache-v6';
 const STATIC_ASSETS = [
   './',
   './index.html',

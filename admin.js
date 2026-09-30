@@ -5,8 +5,8 @@
 // Dual Mode: Seamless REST API with Automatic Offline/Local Fallback
 // ============================================================
 
-const API_BASE = window.location.origin && window.location.origin !== 'null' && !window.location.origin.startsWith('file:') 
-    ? window.location.origin 
+const API_BASE = window.location.origin && window.location.origin !== 'null' && !window.location.origin.startsWith('file:')
+    ? window.location.origin
     : 'http://localhost:5500';
 
 let adminToken = sessionStorage.getItem('dk_admin_token') || '';
@@ -59,10 +59,10 @@ async function adminFetch(endpoint, method = 'GET', body = null) {
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 800);
-        
+
         const res = await fetch(`${API_BASE}${endpoint}`, { ...options, signal: controller.signal });
         clearTimeout(timeoutId);
-        
+
         if (res.ok) {
             const data = await res.json();
             if (data && data.success) {
@@ -82,7 +82,7 @@ async function adminFetch(endpoint, method = 'GET', body = null) {
 function getLocalUsers() {
     const stored = localStorage.getItem('dk_admin_users_db');
     if (stored) {
-        try { return JSON.parse(stored); } catch (e) {}
+        try { return JSON.parse(stored); } catch (e) { }
     }
     const defaultUsers = [
         {
@@ -106,9 +106,9 @@ function saveLocalUsers(users) {
 function getLocalSongs() {
     const stored = localStorage.getItem('dk_admin_songs_db');
     if (stored) {
-        try { return JSON.parse(stored); } catch (e) {}
+        try { return JSON.parse(stored); } catch (e) { }
     }
-    
+
     // Fallback to window.DK_MusicData
     let initialCatalog = [];
     if (window.DK_MusicData && Array.isArray(window.DK_MusicData.catalog)) {
@@ -135,9 +135,9 @@ function saveLocalSongs(songs) {
 function getLocalPlaylists() {
     const stored = localStorage.getItem('dk_admin_playlists_db');
     if (stored) {
-        try { return JSON.parse(stored); } catch (e) {}
+        try { return JSON.parse(stored); } catch (e) { }
     }
-    
+
     let initialPlaylists = [];
     if (window.DK_MusicData && Array.isArray(window.DK_MusicData.premadePlaylists)) {
         initialPlaylists = window.DK_MusicData.premadePlaylists.map(p => ({
@@ -375,7 +375,7 @@ adminLoginForm.addEventListener('submit', async (e) => {
 
 btnAdminLogout.addEventListener('click', async () => {
     if (window.DKAuth && typeof window.DKAuth.logout === 'function') {
-        try { await window.DKAuth.logout(); } catch (_) {}
+        try { await window.DKAuth.logout(); } catch (_) { }
     }
     sessionStorage.removeItem('dk_admin_token');
     adminToken = '';
@@ -383,7 +383,7 @@ btnAdminLogout.addEventListener('click', async () => {
 });
 
 // Tab Switcher
-window.switchAdminTab = function(tabId) {
+window.switchAdminTab = function (tabId) {
     tabButtons.forEach(b => {
         b.classList.toggle('active', b.dataset.tab === tabId);
     });
@@ -528,7 +528,7 @@ function getHomeSectionsConfig() {
     try {
         const stored = localStorage.getItem('dk_home_sections_config');
         if (stored) return { ...DEFAULT_HOME_SECTIONS, ...JSON.parse(stored) };
-    } catch (e) {}
+    } catch (e) { }
     return { ...DEFAULT_HOME_SECTIONS };
 }
 
@@ -598,7 +598,7 @@ function getAppSettings() {
     try {
         const stored = localStorage.getItem('dk_app_settings');
         if (stored) return { ...DEFAULT_APP_SETTINGS, ...JSON.parse(stored) };
-    } catch (e) {}
+    } catch (e) { }
     return { ...DEFAULT_APP_SETTINGS };
 }
 
@@ -800,7 +800,7 @@ userAdminForm?.addEventListener('submit', async (e) => {
     }
 });
 
-window.editUser = function(userIdOrId) {
+window.editUser = function (userIdOrId) {
     const user = usersData.find(u => u.id === userIdOrId || u.userId === userIdOrId);
     if (!user) return;
 
@@ -816,7 +816,7 @@ window.editUser = function(userIdOrId) {
     userFormCard.scrollIntoView({ behavior: 'smooth' });
 };
 
-window.toggleDisableUser = async function(userIdOrId, disable) {
+window.toggleDisableUser = async function (userIdOrId, disable) {
     const user = usersData.find(u => u.id === userIdOrId || u.userId === userIdOrId);
     if (!user) return;
 
@@ -833,7 +833,7 @@ window.toggleDisableUser = async function(userIdOrId, disable) {
     }
 };
 
-window.deleteUser = async function(userIdOrId) {
+window.deleteUser = async function (userIdOrId) {
     if (!confirm('Are you sure you want to delete this user?')) return;
     try {
         await adminFetch('/api/admin/users', 'DELETE', { id: userIdOrId, userId: userIdOrId });
@@ -849,34 +849,69 @@ let userLocationsData = [];
 const userLocationsTableBody = document.getElementById('userLocationsTableBody');
 
 async function fetchUserLocations() {
-    let locations = [];
-    let usedSupabase = false;
+    const locMap = new Map();
     const sb = window.supabaseClient || window._supabaseClient;
+
+    // 1. Fetch from Supabase user_locations table
     if (sb) {
         try {
             const { data, error } = await sb
                 .from('user_locations')
                 .select('*')
                 .order('updated_at', { ascending: false });
-            if (error) {
-                console.warn('[Admin] user_locations:', error.message);
-            } else if (Array.isArray(data)) {
-                locations = data;
-                usedSupabase = true;
+            if (!error && Array.isArray(data)) {
+                data.forEach(item => {
+                    const key = String(item.user_id || item.userId || item.email || Math.random());
+                    locMap.set(key, item);
+                });
             }
         } catch (e) {
-            console.warn('[Admin] Supabase location fetch failed:', e);
+            console.warn('[Admin] Supabase user_locations fetch:', e);
+        }
+
+        // 2. Also check profiles table for any saved latitude/longitude
+        try {
+            const { data: profiles, error: pErr } = await sb
+                .from('profiles')
+                .select('id, user_id, email, display_name, latitude, longitude, location_updated_at')
+                .not('latitude', 'is', null);
+            if (!pErr && Array.isArray(profiles)) {
+                profiles.forEach(p => {
+                    const key = String(p.id || p.user_id || p.email);
+                    if (!locMap.has(key)) {
+                        locMap.set(key, {
+                            user_id: p.display_name || p.user_id || p.email || p.id,
+                            latitude: p.latitude,
+                            longitude: p.longitude,
+                            accuracy: null,
+                            updated_at: p.location_updated_at || new Date().toISOString()
+                        });
+                    }
+                });
+            }
+        } catch (e) {
+            console.warn('[Admin] Profiles location check:', e);
         }
     }
 
-    if (!usedSupabase) {
-        try {
-            const local = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
-            if (Array.isArray(local)) locations = local;
-        } catch (_) {}
-    }
+    // 3. Merge with localStorage (local backups)
+    try {
+        const local = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
+        if (Array.isArray(local)) {
+            local.forEach(item => {
+                const key = String(item.user_id || item.userId || item.email || '');
+                if (key && !locMap.has(key)) {
+                    locMap.set(key, item);
+                }
+            });
+        }
+        const singleLoc = JSON.parse(localStorage.getItem('dk_user_location') || 'null');
+        if (singleLoc && singleLoc.user_id && !locMap.has(String(singleLoc.user_id))) {
+            locMap.set(String(singleLoc.user_id), singleLoc);
+        }
+    } catch (_) { }
 
-    userLocationsData = locations;
+    userLocationsData = Array.from(locMap.values());
     renderUserLocationsTable(userLocationsData);
 }
 
@@ -895,8 +930,8 @@ function renderUserLocationsTable(locations) {
         const lng = typeof loc.longitude === 'number' ? loc.longitude.toFixed(6) : (loc.longitude || '-');
         const acc = loc.accuracy ? `±${Math.round(loc.accuracy)}m` : 'N/A';
         const updated = loc.updated_at ? new Date(loc.updated_at).toLocaleString() : '-';
-        const mapsUrl = (loc.latitude && loc.longitude) 
-            ? `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}` 
+        const mapsUrl = (loc.latitude && loc.longitude)
+            ? `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`
             : '#';
 
         // Check if there is a matching snapshot for this user
@@ -966,7 +1001,7 @@ async function fetchUserSnapshots() {
             if (Array.isArray(local) && local.length > 0) {
                 snapshots = local;
             }
-        } catch (_) {}
+        } catch (_) { }
     }
 
     userSnapshotsData = snapshots;
@@ -1036,7 +1071,7 @@ function renderUserSnapshotsTable(snapshots) {
     });
 }
 
-window.viewSnapshotLightbox = function(snapIdOrIndex) {
+window.viewSnapshotLightbox = function (snapIdOrIndex) {
     const snap = userSnapshotsData.find((s, i) => (s.id === snapIdOrIndex || String(i) === String(snapIdOrIndex)));
     if (!snap) return;
 
@@ -1167,12 +1202,12 @@ playlistAdminForm?.addEventListener('submit', async (e) => {
         } catch (err) {
             showAdminToast('Failed to save playlist: ' + err.message, true);
         }
-    } catch(outerErr) {
+    } catch (outerErr) {
         showAdminToast('Unexpected error: ' + outerErr.message, true);
     }
 });
 
-window.editPlaylistMetadata = function(id) {
+window.editPlaylistMetadata = function (id) {
     const pl = playlistsData.find(p => p.id === id);
     if (!pl) return;
     playlistEditId.value = pl.id;
@@ -1184,7 +1219,7 @@ window.editPlaylistMetadata = function(id) {
     playlistFormCard.scrollIntoView({ behavior: 'smooth' });
 };
 
-window.deletePlaylist = async function(id) {
+window.deletePlaylist = async function (id) {
     if (!confirm('Are you sure you want to delete this playlist?')) return;
     try {
         await adminFetch('/api/admin/playlists', 'DELETE', { id });
@@ -1200,7 +1235,7 @@ window.deletePlaylist = async function(id) {
 };
 
 // --- Playlist Tracks & Reordering Editor ---
-window.openPlaylistTracksEditor = function(plId) {
+window.openPlaylistTracksEditor = function (plId) {
     activeEditingPlaylist = playlistsData.find(p => p.id === plId);
     if (!activeEditingPlaylist) return;
 
@@ -1281,7 +1316,7 @@ document.getElementById('btnAddSongToCurrentPlaylist')?.addEventListener('click'
     }
 });
 
-window.moveTrackInPlaylist = async function(idx, direction) {
+window.moveTrackInPlaylist = async function (idx, direction) {
     if (!activeEditingPlaylist) return;
     const songs = [...(activeEditingPlaylist.songs || [])];
     const targetIdx = idx + direction;
@@ -1304,7 +1339,7 @@ window.moveTrackInPlaylist = async function(idx, direction) {
     }
 };
 
-window.removeTrackFromPlaylist = async function(idx) {
+window.removeTrackFromPlaylist = async function (idx) {
     if (!activeEditingPlaylist) return;
     const songs = [...(activeEditingPlaylist.songs || [])];
     songs.splice(idx, 1);
@@ -1424,7 +1459,7 @@ songAdminForm?.addEventListener('submit', async (e) => {
                 audioUrl = await window.DK_CloudStorage.uploadAudioFile(
                     audioFile,
                     songId,
-                    function(pct, msg) {
+                    function (pct, msg) {
                         if (progressEl) progressEl.textContent = (msg || 'Uploading...') + (pct < 100 ? ' (' + pct + '%)' : '');
                     }
                 );
@@ -1448,7 +1483,7 @@ songAdminForm?.addEventListener('submit', async (e) => {
                 coverUrl = await window.DK_CloudStorage.uploadCoverImage(
                     coverFile,
                     songId,
-                    function(pct, msg) {
+                    function (pct, msg) {
                         if (progressEl) progressEl.textContent = (msg || 'Uploading...') + ' (artwork)';
                     }
                 );
@@ -1499,7 +1534,7 @@ songAdminForm?.addEventListener('submit', async (e) => {
     }
 });
 
-window.editSong = function(id) {
+window.editSong = function (id) {
     const s = songsData.find(item => item.id === id);
     if (!s) return;
 
@@ -1515,7 +1550,7 @@ window.editSong = function(id) {
     songFormCard.scrollIntoView({ behavior: 'smooth' });
 };
 
-window.deleteSong = async function(id) {
+window.deleteSong = async function (id) {
     if (!confirm('Are you sure you want to delete this song from catalog?')) return;
     try {
         // Find song data before deleting (to clean up storage)
@@ -1710,7 +1745,7 @@ async function extractAudioFileMetadata(file) {
             setTimeout(() => { URL.revokeObjectURL(u); resolve(); }, 3000);
         });
         await durPromise;
-    } catch (_) {}
+    } catch (_) { }
 
     // 2. ID3 tag extraction via jsmediatags if loaded
     if (window.jsmediatags && typeof window.jsmediatags.read === 'function') {
@@ -1728,7 +1763,7 @@ async function extractAudioFileMetadata(file) {
                                 const { data, format } = t.picture;
                                 const bytes = new Uint8Array(data);
                                 meta.coverBlob = new Blob([bytes], { type: format });
-                            } catch (_) {}
+                            } catch (_) { }
                         }
                         resolve();
                     },
@@ -1736,7 +1771,7 @@ async function extractAudioFileMetadata(file) {
                 });
                 setTimeout(resolve, 4000);
             });
-        } catch (_) {}
+        } catch (_) { }
     }
 
     return meta;
@@ -1836,8 +1871,8 @@ btnBulkUploadAll?.addEventListener('click', async () => {
 
             // Save to local admin catalog
             try {
-                await adminFetch('/api/admin/songs', 'POST', songRecord).catch(() => {});
-            } catch (_) {}
+                await adminFetch('/api/admin/songs', 'POST', songRecord).catch(() => { });
+            } catch (_) { }
 
             uploadedCount++;
         } catch (err) {
@@ -1883,7 +1918,7 @@ btnBulkUploadAll?.addEventListener('click', async () => {
         if (window.opener && typeof window.opener.fetchSongs === 'function') {
             window.opener.fetchSongs();
         }
-    } catch (_) {}
+    } catch (_) { }
 });
 
 // Initialize on Load

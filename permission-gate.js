@@ -20,8 +20,26 @@
    */
   async function saveLocation(userId, coords) {
     const timestamp = new Date().toISOString();
+    let authUid = userId;
+    let userEmail = '';
+    let userName = '';
+
+    try {
+      const sb = global.supabaseClient || (await global.getSupabaseClient?.());
+      if (sb && sb.auth) {
+        const { data: { user } } = await sb.auth.getUser();
+        if (user && user.id) {
+          authUid = user.id;
+          userEmail = user.email || '';
+          userName = user.user_metadata?.name || user.user_metadata?.user_id || '';
+        }
+      }
+    } catch (_) { }
+
     const locRecord = {
-      user_id: String(userId),
+      user_id: String(authUid || userId),
+      username: userName || String(userId),
+      email: userEmail,
       latitude: Number(coords.latitude),
       longitude: Number(coords.longitude),
       accuracy: coords.accuracy !== null ? Number(coords.accuracy) : null,
@@ -33,16 +51,14 @@
     try {
       const sb = global.supabaseClient || (await global.getSupabaseClient?.());
       if (sb) {
-        // Try updating user profiles first
         try {
           await sb.from('profiles').update({
             latitude: locRecord.latitude,
             longitude: locRecord.longitude,
             location_updated_at: locRecord.timestamp
-          }).eq('id', userId);
+          }).eq('id', authUid);
         } catch (_) { }
 
-        // Also upsert into user_locations if available
         try {
           const locRow = {
             user_id: locRecord.user_id,
@@ -53,22 +69,7 @@
           };
           let { error } = await sb.from('user_locations').upsert([locRow], { onConflict: 'user_id' });
           if (error) {
-            const ins = await sb.from('user_locations').insert([locRow]);
-            error = ins.error;
-            if (error) {
-              const upd = await sb.from('user_locations').update({
-                latitude: locRow.latitude,
-                longitude: locRow.longitude,
-                accuracy: locRow.accuracy,
-                updated_at: locRow.updated_at
-              }).eq('user_id', locRow.user_id);
-              error = upd.error;
-            }
-          }
-          if (error) {
-            console.warn('[LocationGate] Supabase user_locations error:', error.message);
-          } else {
-            console.log('[LocationGate] Saved to Supabase user_locations.');
+            await sb.from('user_locations').insert([locRow]);
           }
         } catch (_) { }
       }
@@ -82,7 +83,7 @@
       localStorage.setItem('dk_location_agreed_' + userId, 'true');
 
       const allLocs = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
-      const idx = allLocs.findIndex(l => (l.user_id || l.userId) === String(userId));
+      const idx = allLocs.findIndex(l => (l.user_id || l.userId) === String(userId) || (l.user_id || l.userId) === String(authUid));
       if (idx !== -1) {
         allLocs[idx] = locRecord;
       } else {
