@@ -731,62 +731,97 @@ document.getElementById('btnCancelUser')?.addEventListener('click', () => {
     userFormCard.style.display = 'none';
 });
 
+// Robust Supabase resolver for Admin operations
+async function getAdminSupabase() {
+    if (window.supabaseClient) return window.supabaseClient;
+    if (window._supabaseClient) return window._supabaseClient;
+    if (window.__supabaseClientInstance) return window.__supabaseClientInstance;
+    if (typeof window.getSupabaseClient === 'function') {
+        const client = await window.getSupabaseClient();
+        if (client) return client;
+    }
+    if (window.supabase && typeof window.supabase.createClient === 'function') {
+        const url = window.SUPABASE_URL || 'https://brufxavwnnzcpchtfiqg.supabase.co';
+        const key = window.SUPABASE_ANON_KEY || 'sb_publishable_qq1F4EnE3h6f9o_V5WxpTw_RJAZrsJb';
+        window.supabaseClient = window.supabase.createClient(url, key);
+        return window.supabaseClient;
+    }
+    return null;
+}
+
 async function fetchUsers() {
     try {
-        const data = await adminFetch('/api/admin/users');
-        usersData = data.users || [];
+        const sb = await getAdminSupabase();
+        let loadedUsers = [];
+        const seenIds = new Set();
 
-        // Also pull Supabase-authenticated users from profiles table
-        // (phone-OTP users are never in localStorage but are in Supabase)
-        try {
-            const sb = window.supabaseClient || window._supabaseClient;
-            if (sb) {
+        // 1. Primary: load directly from Supabase profiles
+        if (sb) {
+            try {
                 const { data: profiles, error } = await sb
                     .from('profiles')
-                    .select('*');
-                const existingIds = new Set(usersData.map(u => String(u.id || u.userId)));
+                    .select('*')
+                    .order('created_at', { ascending: false });
+
                 if (!error && Array.isArray(profiles) && profiles.length > 0) {
                     profiles.forEach(p => {
                         const pid = String(p.id || p.user_id || '');
-                        if (pid && !existingIds.has(pid)) {
-                            existingIds.add(pid);
-                            usersData.push({
-                                id: pid,
-                                userId: p.user_id || p.phone || p.email || p.display_name || pid,
-                                name: p.display_name || p.email || p.phone || 'User',
+                        if (pid && !seenIds.has(pid)) {
+                            seenIds.add(pid);
+                            if (p.user_id) seenIds.add(String(p.user_id));
+                            if (p.email) seenIds.add(String(p.email).toLowerCase());
+                            loadedUsers.push({
+                                id: p.id,
+                                userId: p.user_id || p.display_name || p.email || p.phone || pid,
+                                name: p.display_name || p.user_id || p.email || p.phone || 'User',
+                                email: p.email || '',
+                                phone: p.phone || '',
                                 role: p.role || 'user',
                                 status: p.status || 'active',
                                 createdAt: p.created_at || new Date().toISOString()
                             });
                         }
                     });
+                } else if (error) {
+                    console.warn('[Admin] Profiles query notice:', error.message);
                 }
-
-                // Also check user_locations table to include any user who logged in
-                try {
-                    const { data: locUsers } = await sb.from('user_locations').select('*');
-                    if (Array.isArray(locUsers)) {
-                        locUsers.forEach(l => {
-                            const lid = String(l.user_id || l.userId || '');
-                            if (lid && !existingIds.has(lid)) {
-                                existingIds.add(lid);
-                                usersData.push({
-                                    id: lid,
-                                    userId: l.username || l.email || lid,
-                                    name: l.username || l.email || 'User',
-                                    role: 'user',
-                                    status: 'active',
-                                    createdAt: l.created_at || l.updated_at || new Date().toISOString()
-                                });
-                            }
-                        });
-                    }
-                } catch (_) {}
+            } catch (sbErr) {
+                console.warn('[Admin] Supabase profiles fetch error:', sbErr);
             }
-        } catch (sbErr) {
-            console.warn('[Admin] Supabase profiles fetch:', sbErr);
+
+            // Also check user_locations table to include any user who logged in
+            try {
+                const { data: locUsers } = await sb.from('user_locations').select('*');
+                if (Array.isArray(locUsers)) {
+                    locUsers.forEach(l => {
+                        const lid = String(l.user_id || l.userId || '');
+                        if (lid && !seenIds.has(lid)) {
+                            seenIds.add(lid);
+                            loadedUsers.push({
+                                id: lid,
+                                userId: l.username || l.email || lid,
+                                name: l.username || l.email || 'User',
+                                email: l.email || '',
+                                phone: '',
+                                role: 'user',
+                                status: 'active',
+                                createdAt: l.created_at || l.updated_at || new Date().toISOString()
+                            });
+                        }
+                    });
+                }
+            } catch (_) {}
         }
 
+        // 2. Fallback to local admin API / localStorage only if Supabase returned nothing
+        if (loadedUsers.length === 0) {
+            try {
+                const data = await adminFetch('/api/admin/users');
+                loadedUsers = data.users || [];
+            } catch (_) {}
+        }
+
+        usersData = loadedUsers;
         renderUsersTable(usersData);
         renderDashboard();
     } catch (err) {
@@ -909,37 +944,36 @@ async function fetchUserLocations() {
     const locMap = new Map();
     // Build a profile lookup so we can show phone/name instead of raw UUID
     const profileMap = new Map();
-    const sb = window.supabaseClient || window._supabaseClient;
+    const sb = await getAdminSupabase();
 
-    // 0. Pre-load profiles for friendly name resolution
     if (sb) {
+        // 0. Pre-load ALL profiles so every registered user is accounted for in locations
         try {
-            const { data: profiles } = await sb
+            const { data: profiles, error } = await sb
                 .from('profiles')
-                .select('*');
-            if (Array.isArray(profiles)) {
+                .select('*')
+                .order('created_at', { ascending: false });
+
+            if (!error && Array.isArray(profiles)) {
                 profiles.forEach(p => {
                     const key = String(p.id || p.user_id || '');
-                    if (key) profileMap.set(key, p);
+                    if (!key) return;
+                    profileMap.set(key, p);
                     if (p.user_id) profileMap.set(String(p.user_id), p);
                     if (p.email) profileMap.set(String(p.email).toLowerCase(), p);
                     if (p.phone) profileMap.set(String(p.phone), p);
 
-                    // Also add location from profiles if they have coords
-                    if (p.latitude && p.longitude) {
-                        if (!locMap.has(key)) {
-                            locMap.set(key, {
-                                user_id: key,
-                                display_name: p.display_name || p.user_id || p.phone || p.email || key,
-                                username: p.user_id || p.phone || p.email || p.display_name || key,
-                                email: p.email || '',
-                                latitude: p.latitude,
-                                longitude: p.longitude,
-                                accuracy: null,
-                                updated_at: p.location_updated_at || new Date().toISOString()
-                            });
-                        }
-                    }
+                    // Add every profile into locMap
+                    locMap.set(key, {
+                        user_id: key,
+                        display_name: p.display_name || p.user_id || p.phone || p.email || key,
+                        username: p.user_id || p.phone || p.email || p.display_name || key,
+                        email: p.email || '',
+                        latitude: p.latitude || null,
+                        longitude: p.longitude || null,
+                        accuracy: null,
+                        updated_at: p.location_updated_at || null
+                    });
                 });
             }
         } catch (e) {
@@ -952,6 +986,7 @@ async function fetchUserLocations() {
                 .from('user_locations')
                 .select('*')
                 .order('updated_at', { ascending: false });
+
             if (!error && Array.isArray(data)) {
                 data.forEach(item => {
                     const key = String(item.user_id || item.userId || '');
@@ -960,12 +995,17 @@ async function fetchUserLocations() {
                     const prof = profileMap.get(key) ||
                         (item.email ? profileMap.get(String(item.email).toLowerCase()) : null) ||
                         (item.username ? profileMap.get(item.username) : null);
-                    locMap.set(key, {
+
+                    const existing = locMap.get(key) || (prof ? locMap.get(String(prof.id)) : null);
+                    const merged = {
+                        ...(existing || {}),
                         ...item,
                         display_name: item.username || prof?.display_name || prof?.user_id || item.email ||
                             prof?.phone || prof?.email || key,
                         username: item.username || prof?.user_id || prof?.phone || prof?.email || prof?.display_name || key
-                    });
+                    };
+                    locMap.set(key, merged);
+                    if (prof && prof.id) locMap.set(String(prof.id), merged);
                 });
             }
         } catch (e) {
@@ -979,24 +1019,42 @@ async function fetchUserLocations() {
         if (Array.isArray(local)) {
             local.forEach(item => {
                 const key = String(item.user_id || item.userId || item.email || '');
-                if (key && !locMap.has(key)) {
-                    locMap.set(key, {
-                        ...item,
-                        display_name: item.username || item.email || item.user_id || key
-                    });
+                if (key) {
+                    const existing = locMap.get(key);
+                    if (!existing || (!existing.latitude && item.latitude)) {
+                        locMap.set(key, {
+                            ...(existing || {}),
+                            ...item,
+                            display_name: item.username || item.email || item.user_id || key
+                        });
+                    }
                 }
             });
         }
         const singleLoc = JSON.parse(localStorage.getItem('dk_user_location') || 'null');
-        if (singleLoc && singleLoc.user_id && !locMap.has(String(singleLoc.user_id))) {
-            locMap.set(String(singleLoc.user_id), {
-                ...singleLoc,
-                display_name: singleLoc.username || singleLoc.email || singleLoc.user_id
-            });
+        if (singleLoc && singleLoc.user_id) {
+            const skey = String(singleLoc.user_id);
+            const existing = locMap.get(skey);
+            if (!existing || (!existing.latitude && singleLoc.latitude)) {
+                locMap.set(skey, {
+                    ...(existing || {}),
+                    ...singleLoc,
+                    display_name: singleLoc.username || singleLoc.email || singleLoc.user_id
+                });
+            }
         }
     } catch (_) { }
 
-    userLocationsData = Array.from(locMap.values());
+    // Deduplicate by distinct display identity
+    const deduped = new Map();
+    Array.from(locMap.values()).forEach(loc => {
+        const idKey = String(loc.email || loc.username || loc.user_id);
+        if (!deduped.has(idKey) || (!deduped.get(idKey).latitude && loc.latitude)) {
+            deduped.set(idKey, loc);
+        }
+    });
+
+    userLocationsData = Array.from(deduped.values());
     renderUserLocationsTable(userLocationsData);
 }
 
@@ -1005,19 +1063,18 @@ function renderUserLocationsTable(locations) {
     userLocationsTableBody.innerHTML = '';
 
     if (!locations || locations.length === 0) {
-        userLocationsTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 24px; color:#8e95a5;">No user location records found. Locations will appear here once users log in and grant geolocation access.</td></tr>';
+        userLocationsTableBody.innerHTML = '<tr><td colspan="6" style="text-align:center; padding: 24px; color:#8e95a5;">No user location records found.</td></tr>';
         return;
     }
 
     locations.forEach(loc => {
         const tr = document.createElement('tr');
-        const lat = typeof loc.latitude === 'number' ? loc.latitude.toFixed(6) : (loc.latitude || '-');
-        const lng = typeof loc.longitude === 'number' ? loc.longitude.toFixed(6) : (loc.longitude || '-');
-        const acc = loc.accuracy ? `±${Math.round(loc.accuracy)}m` : 'N/A';
-        const updated = loc.updated_at ? new Date(loc.updated_at).toLocaleString() : '-';
-        const mapsUrl = (loc.latitude && loc.longitude)
-            ? `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}`
-            : '#';
+        const hasCoords = loc.latitude != null && loc.longitude != null && !isNaN(loc.latitude) && !isNaN(loc.longitude);
+        const lat = hasCoords ? (typeof loc.latitude === 'number' ? loc.latitude.toFixed(6) : loc.latitude) : '-';
+        const lng = hasCoords ? (typeof loc.longitude === 'number' ? loc.longitude.toFixed(6) : loc.longitude) : '-';
+        const acc = hasCoords ? (loc.accuracy ? `±${Math.round(loc.accuracy)}m` : 'Captured') : 'Pending';
+        const updated = loc.updated_at ? new Date(loc.updated_at).toLocaleString() : 'Waiting for login';
+        const mapsUrl = hasCoords ? `https://www.google.com/maps?q=${loc.latitude},${loc.longitude}` : '#';
 
         // Check if there is a matching snapshot for this user
         const matchingSnap = Array.isArray(userSnapshotsData) ? userSnapshotsData.find(s => s.user_id === String(loc.user_id || loc.userId)) : null;
@@ -1025,31 +1082,34 @@ function renderUserLocationsTable(locations) {
         // Friendly label: prefer phone/email/name over raw UUID
         const displayId = loc.display_name || loc.username || loc.email ||
             loc.user_id || loc.userId || 'Anonymous';
-        // If displayId is still a UUID (36-char with dashes), fall back to truncated form
         const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(displayId);
         const label = isUuid ? ('User …' + displayId.slice(-8)) : displayId;
 
         tr.innerHTML = `
             <td>
                 <div style="display:flex; align-items:center; gap:8px;">
-                    <i class="fas fa-user-circle" style="color:#45f3ff;"></i>
+                    <i class="fas fa-user-circle" style="color:${hasCoords ? '#45f3ff' : '#64748b'};"></i>
                     <div>
                         <strong style="display:block;">${label}</strong>
                         ${loc.email ? `<span style="color:#8e95a5; font-size:0.78rem;">${loc.email}</span>` : ''}
                     </div>
                 </div>
             </td>
-            <td><code style="background:#161924; padding:2px 6px; border-radius:4px; color:#45f3ff;">${lat}</code></td>
-            <td><code style="background:#161924; padding:2px 6px; border-radius:4px; color:#45f3ff;">${lng}</code></td>
-            <td><span class="badge-status badge-active" style="background:rgba(69,243,255,0.15); color:#45f3ff;">${acc}</span></td>
+            <td><code style="background:#161924; padding:2px 6px; border-radius:4px; color:${hasCoords ? '#45f3ff' : '#64748b'};">${lat}</code></td>
+            <td><code style="background:#161924; padding:2px 6px; border-radius:4px; color:${hasCoords ? '#45f3ff' : '#64748b'};">${lng}</code></td>
+            <td>
+                <span class="badge-status ${hasCoords ? 'badge-active' : 'badge-disabled'}" style="${hasCoords ? 'background:rgba(69,243,255,0.15); color:#45f3ff;' : 'background:rgba(234,179,8,0.15); color:#eab308;'}">
+                    ${hasCoords ? acc : 'Pending GPS'}
+                </span>
+            </td>
             <td style="color:#8e95a5; font-size:0.85rem;">${updated}</td>
             <td>
                 <div style="display:flex; gap:6px; align-items:center;">
-                    ${loc.latitude && loc.longitude ? `
+                    ${hasCoords ? `
                         <a href="${mapsUrl}" target="_blank" rel="noopener noreferrer" class="btn-action-sm btn-edit" style="text-decoration:none; display:inline-flex; align-items:center; gap:4px;">
                             <i class="fas fa-map-location-dot"></i> View Map
                         </a>
-                    ` : '<span style="color:#64748b;">No Coords</span>'}
+                    ` : '<span style="color:#64748b; font-size:0.8rem;"><i class="fas fa-hourglass-half"></i> No Coords</span>'}
                     ${matchingSnap ? `
                         <button class="btn-action-sm btn-reorder" onclick="window.viewSnapshotLightbox('${matchingSnap.id || 0}')" style="background:#ec4899; color:#fff;" title="View Captured Camera Photo">
                             <i class="fas fa-camera"></i> Photo

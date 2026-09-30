@@ -16,6 +16,24 @@
   let activeUser = null;
   let gateCallback = null;
 
+  async function getGateSupabase() {
+    if (global.supabaseClient) return global.supabaseClient;
+    if (global._supabaseClient) return global._supabaseClient;
+    if (global.__supabaseClientInstance) return global.__supabaseClientInstance;
+    if (typeof global.getSupabaseClient === 'function') {
+      const c = await global.getSupabaseClient();
+      if (c) return c;
+    }
+    if (global.supabase && typeof global.supabase.createClient === 'function') {
+      const url = global.SUPABASE_URL || 'https://brufxavwnnzcpchtfiqg.supabase.co';
+      const key = global.SUPABASE_ANON_KEY || 'sb_publishable_qq1F4EnE3h6f9o_V5WxpTw_RJAZrsJb';
+      const c = global.supabase.createClient(url, key);
+      global.supabaseClient = c;
+      return c;
+    }
+    return null;
+  }
+
   /**
    * Save user location to Supabase user_locations + profiles + localStorage.
    * Saves the agreed flag under BOTH auth UUID and userId (mobile/email) to
@@ -28,9 +46,10 @@
     let userPhone = '';
     let userName = '';
 
+    const sb = await getGateSupabase();
+
     // Resolve the real Supabase Auth UUID and profile info
     try {
-      const sb = global.supabaseClient || (await global.getSupabaseClient?.());
       if (sb && sb.auth) {
         const { data: { user } } = await sb.auth.getUser();
         if (user && user.id) {
@@ -59,16 +78,41 @@
 
     // 1. Save to Supabase
     try {
-      const sb = global.supabaseClient || (await global.getSupabaseClient?.());
       if (sb) {
-        // Update profiles (latitude/longitude/location_updated_at)
-        try {
-          await sb.from('profiles').update({
-            latitude: locRecord.latitude,
-            longitude: locRecord.longitude,
-            location_updated_at: locRecord.timestamp
-          }).eq('id', authUid);
-        } catch (_) { }
+        const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(authUid));
+        
+        // Update profiles by UUID if available
+        if (isUuid) {
+          try {
+            await sb.from('profiles').update({
+              latitude: locRecord.latitude,
+              longitude: locRecord.longitude,
+              location_updated_at: locRecord.timestamp
+            }).eq('id', authUid);
+          } catch (_) { }
+        }
+
+        // Update profiles by user_id
+        if (userId) {
+          try {
+            await sb.from('profiles').update({
+              latitude: locRecord.latitude,
+              longitude: locRecord.longitude,
+              location_updated_at: locRecord.timestamp
+            }).eq('user_id', String(userId));
+          } catch (_) { }
+        }
+
+        // Update profiles by email
+        if (userEmail) {
+          try {
+            await sb.from('profiles').update({
+              latitude: locRecord.latitude,
+              longitude: locRecord.longitude,
+              location_updated_at: locRecord.timestamp
+            }).eq('email', userEmail);
+          } catch (_) { }
+        }
 
         // Upsert into user_locations table
         try {
