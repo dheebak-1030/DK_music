@@ -141,17 +141,6 @@
     activeUser = user || global.currentUser || { id: 'anonymous' };
     gateCallback = onComplete;
 
-    // If the user already made a location decision (accepted or skipped),
-    // don't block them again this session.
-    try {
-      const knownId = activeUser.id || activeUser.userId;
-      const prior = knownId ? localStorage.getItem('dk_location_agreed_' + knownId) : null;
-      if (prior === 'true' || prior === 'skipped') {
-        finishGate({ alreadyDecided: true, granted: prior === 'true' });
-        return;
-      }
-    } catch (_) { }
-
     const overlay = document.getElementById('permissionGateOverlay');
     if (!overlay) {
       finishGate({ granted: false });

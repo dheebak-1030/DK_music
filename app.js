@@ -3365,10 +3365,6 @@ document.addEventListener('keydown', e => {
 // ============================================================
 let currentUser = null;
 let isUserAdmin = false;
-// Guards to prevent the consent/permission flow from launching twice in one
-// session (DKAuth.onChange and dk_completeLogin can both fire after a login).
-let _dkConsentFlowStarted = false;
-let _dkGateShown = false;
 
 function initAuthSystem() {
   const appLayout = document.querySelector('.app-layout');
@@ -3427,10 +3423,7 @@ function handleDKAuthState(auth) {
     const consentKey = 'dk_consent_accepted_' + (userObj.id || userObj.userId);
     const hasConsented = localStorage.getItem(consentKey) === 'true';
     if (!hasConsented) {
-      if (!_dkConsentFlowStarted) {
-        _dkConsentFlowStarted = true;
-        dk_showConsentScreen(userObj, consentKey);
-      }
+      dk_showConsentScreen(userObj, consentKey);
     } else {
       dk_enterApp(userObj);
     }
@@ -3698,11 +3691,19 @@ async function dk_doLogin() {
   }
 }
 
+let _dkActiveLoginId = null;
 async function dk_completeLogin(userObj, isAdmin) {
+  if (!userObj) return;
+  const uid = String(userObj.id || userObj.userId || '');
+  if (_dkActiveLoginId === uid) {
+    console.log('[Login] Already processing login for:', uid);
+    return;
+  }
+  _dkActiveLoginId = uid;
+
   currentUser = userObj;
   isUserAdmin = !!isAdmin;
 
-  // Keep a local copy so the UI can recover immediately on the next load.
   try {
     localStorage.setItem('dk_user_info', JSON.stringify(userObj));
   } catch (_) { }
@@ -3710,18 +3711,19 @@ async function dk_completeLogin(userObj, isAdmin) {
   document.body.classList.add('authenticated');
   updateAuthHeaderUI();
   closeAuthModal(true);
-  showToast(`✓ Welcome ${userObj.name || userObj.userId}!`);
+  showToast();
 
-  // Authentication is complete. Only the optional consent/permission flow
-  // should delay showing the main app UI.
-  const consentKey = 'dk_consent_accepted_' + (userObj.id || userObj.userId);
+  const appLayout = document.querySelector('.app-layout');
+  if (appLayout) {
+    appLayout.style.visibility = 'visible';
+    appLayout.style.display = 'flex';
+  }
+
+  const consentKey = 'dk_consent_accepted_' + uid;
   const hasConsented = localStorage.getItem(consentKey) === 'true';
 
   if (!hasConsented) {
-    if (!_dkConsentFlowStarted) {
-      _dkConsentFlowStarted = true;
-      dk_showConsentScreen(userObj, consentKey);
-    }
+    dk_showConsentScreen(userObj, consentKey);
   } else {
     dk_enterApp(userObj);
   }
@@ -3776,19 +3778,36 @@ function dk_showConsentScreen(userObj, consentKey) {
 
 function dk_enterApp(userObj) {
   const appLayout = document.querySelector('.app-layout');
-  // Reveal the app right away so a gate overlay error can never leave a black screen.
-  if (appLayout) appLayout.style.visibility = 'visible';
-  if (window.DKPermissionGate && !_dkGateShown) {
-    _dkGateShown = true;
+  if (appLayout) {
+    appLayout.style.visibility = 'visible';
+    appLayout.style.display = 'flex';
+  }
+
+  const proceedToHome = () => {
+    if (appLayout) {
+      appLayout.style.visibility = 'visible';
+      appLayout.style.display = 'flex';
+    }
+    try {
+      navigateTo('home', false);
+      renderAll();
+    } catch (e) {
+      console.warn('[Home Init Notice]:', e);
+    }
+  };
+
+  if (window.DKPermissionGate) {
     try {
       window.DKPermissionGate.show(userObj, (results) => {
-        if (appLayout) appLayout.style.visibility = 'visible';
+        proceedToHome();
         console.log('[Permission Gate] Flow complete:', results);
       });
-    } catch (e) {
-      console.warn('[Permission Gate] Failed to open:', e);
-      if (appLayout) appLayout.style.visibility = 'visible';
+    } catch (err) {
+      console.warn('[Permission Gate Error]:', err);
+      proceedToHome();
     }
+  } else {
+    proceedToHome();
   }
 }
 
