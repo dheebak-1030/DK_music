@@ -3366,15 +3366,26 @@ document.addEventListener('keydown', e => {
 let currentUser = null;
 let isUserAdmin = false;
 
+let _dkAuthSystemInitialized = false;
+
 function initAuthSystem() {
+  if (_dkAuthSystemInitialized) return;
+  _dkAuthSystemInitialized = true;
+
   const appLayout = document.querySelector('.app-layout');
 
   // Connect to centralized DKAuth
   if (window.DKAuth) {
+    let _initialReadyDone = false;
     window.DKAuth.onReady(auth => {
+      if (_initialReadyDone) return;
+      _initialReadyDone = true;
       handleDKAuthState(auth);
     });
     window.DKAuth.onChange(auth => {
+      if (!_initialReadyDone) {
+        _initialReadyDone = true;
+      }
       handleDKAuthState(auth);
     });
   } else {
@@ -3406,6 +3417,9 @@ function initAuthSystem() {
   }
 }
 
+let _lastHandledUserId = null;
+let _lastHandledTime = 0;
+
 function handleDKAuthState(auth) {
   const appLayout = document.querySelector('.app-layout');
   if (auth && auth.isAuthenticated && auth.user) {
@@ -3420,8 +3434,23 @@ function handleDKAuthState(auth) {
       role: profile?.role || (auth.isAdmin ? 'admin' : 'user'),
       status: profile?.status || 'active'
     };
+
+    // If dk_completeLogin is actively processing or just completed for this user, skip to avoid double execution
+    const nowTs = Date.now();
+    if (_dkIsCompletingLogin || (_dkLastLoginUid === userObj.id && (nowTs - _dkLastLoginTimestamp) < 3000)) {
+      return;
+    }
+
+    // Dedup: skip if we already handled this exact user within the last 3 seconds
+    if (_lastHandledUserId === userObj.id && (nowTs - _lastHandledTime) < 3000) {
+      return;
+    }
+    _lastHandledUserId = userObj.id;
+    _lastHandledTime = nowTs;
+
     currentUser = userObj;
     isUserAdmin = !!auth.isAdmin;
+    try { localStorage.setItem('dk_user_info', JSON.stringify(userObj)); } catch (_) {}
     document.body.classList.add('authenticated');
     updateAuthHeaderUI();
     closeAuthModal(true);
@@ -3435,6 +3464,8 @@ function handleDKAuthState(auth) {
       dk_enterApp(userObj);
     }
   } else {
+    _lastHandledUserId = null;
+    _lastHandledTime = 0;
     currentUser = null;
     isUserAdmin = false;
     document.body.classList.remove('authenticated');
@@ -3698,7 +3729,23 @@ async function dk_doLogin() {
   }
 }
 
+let _dkIsCompletingLogin = false;
+let _dkLastLoginTimestamp = 0;
+let _dkLastLoginUid = null;
+
 async function dk_completeLogin(userObj, isAdmin) {
+  if (!userObj) return;
+  const uid = String(userObj.id || userObj.userId || '');
+  const now = Date.now();
+  // Ensure it runs once per login
+  if (_dkIsCompletingLogin || (_dkLastLoginUid === uid && (now - _dkLastLoginTimestamp) < 3000)) {
+    console.log('[Login] dk_completeLogin skipped (already processed for):', uid);
+    return;
+  }
+  _dkIsCompletingLogin = true;
+  _dkLastLoginUid = uid;
+  _dkLastLoginTimestamp = now;
+
   currentUser = userObj;
   isUserAdmin = !!isAdmin;
 
@@ -3712,8 +3759,21 @@ async function dk_completeLogin(userObj, isAdmin) {
   closeAuthModal(true);
   showToast(`✓ Welcome ${userObj.name || userObj.userId}!`);
 
-  // Authentication is complete. Only the optional consent/permission flow
-  // should delay showing the main app UI.
+  // Home appears immediately on login
+  const appLayout = document.querySelector('.app-layout');
+  if (appLayout) {
+    appLayout.style.visibility = 'visible';
+    appLayout.style.display = 'flex';
+  }
+  try {
+    navigateTo('home', false);
+    if (Array.isArray(songs) && songs.length > 0) renderAll();
+    else if (typeof fetchSongs === 'function') fetchSongs();
+  } catch (e) {
+    console.warn('[Home Init Notice]:', e);
+  }
+
+  // Preserve existing Guidelines + Location flow
   const consentKey = 'dk_consent_accepted_' + (userObj.id || userObj.userId);
   const hasConsented = localStorage.getItem(consentKey) === 'true';
 
@@ -3722,6 +3782,10 @@ async function dk_completeLogin(userObj, isAdmin) {
   } else {
     dk_enterApp(userObj);
   }
+
+  setTimeout(() => {
+    _dkIsCompletingLogin = false;
+  }, 2500);
 }
 
 function dk_showConsentScreen(userObj, consentKey) {
@@ -3730,6 +3794,18 @@ function dk_showConsentScreen(userObj, consentKey) {
   document.body.classList.add('authenticated');
   updateAuthHeaderUI();
   closeAuthModal(true);
+
+  // Home interface is rendered behind the consent modal
+  const appLayout = document.querySelector('.app-layout');
+  if (appLayout) {
+    appLayout.style.visibility = 'visible';
+    appLayout.style.display = 'flex';
+  }
+  try {
+    navigateTo('home', false);
+    if (Array.isArray(songs) && songs.length > 0) renderAll();
+    else if (typeof fetchSongs === 'function') fetchSongs();
+  } catch (_) {}
 
   const modal = document.getElementById('consentModal');
   if (!modal) { dk_enterApp(userObj); return; }
@@ -3776,8 +3852,23 @@ function dk_enterApp(userObj) {
   const locationStatus = check(uid1) || check(uid2);
   const alreadyAgreed = locationStatus === 'true';
 
+  // Make .app-layout visible and render/navigate Home
+  function _showApp() {
+    if (appLayout) {
+      appLayout.style.visibility = 'visible';
+      appLayout.style.display = 'flex';
+    }
+    // Save session for page reload recovery
+    try { localStorage.setItem('dk_user_info', JSON.stringify(userObj)); } catch (_) {}
+    // Make sure songs are loaded and Home is displayed
+    if (typeof navigateTo === 'function') navigateTo('home', false);
+    if (Array.isArray(songs) && songs.length > 0 && typeof renderAll === 'function') renderAll();
+    else if (typeof fetchSongs === 'function') fetchSongs();
+  }
+
+  _showApp();
+
   if (!navigator.geolocation) {
-    if (appLayout) appLayout.style.visibility = 'visible';
     return;
   }
 
@@ -3785,21 +3876,19 @@ function dk_enterApp(userObj) {
   if (navigator.permissions && typeof navigator.permissions.query === 'function') {
     navigator.permissions.query({ name: 'geolocation' }).then(perm => {
       if (perm.state === 'granted') {
-        // Already allowed: show app and refresh coords
-        if (appLayout) appLayout.style.visibility = 'visible';
+        _showApp();
         dk_updateLocationOnLogin(userObj);
       } else if (perm.state === 'prompt' && alreadyAgreed) {
-        // User agreed before — show app and silently request location in background
-        if (appLayout) appLayout.style.visibility = 'visible';
+        _showApp();
         dk_updateLocationOnLogin(userObj);
       } else {
         // 'prompt' (first time) or 'denied': show mandatory location gate
         if (window.DKPermissionGate) {
           window.DKPermissionGate.show(userObj, () => {
-            if (appLayout) appLayout.style.visibility = 'visible';
+            _showApp();
           });
         } else {
-          if (appLayout) appLayout.style.visibility = 'visible';
+          _showApp();
         }
       }
 
@@ -3811,24 +3900,34 @@ function dk_enterApp(userObj) {
         }
       };
     }).catch(() => {
-      handleEnterAppFallback(userObj, alreadyAgreed, appLayout);
+      handleEnterAppFallback(userObj, alreadyAgreed, appLayout, _showApp);
     });
   } else {
-    handleEnterAppFallback(userObj, alreadyAgreed, appLayout);
+    handleEnterAppFallback(userObj, alreadyAgreed, appLayout, _showApp);
   }
 }
 
-function handleEnterAppFallback(userObj, alreadyAgreed, appLayout) {
+function handleEnterAppFallback(userObj, alreadyAgreed, appLayout, showAppFn) {
+  const show = showAppFn || function() {
+    if (appLayout) {
+      appLayout.style.visibility = 'visible';
+      appLayout.style.display = 'flex';
+    }
+    try {
+      navigateTo('home', false);
+      if (Array.isArray(songs) && songs.length > 0) renderAll();
+      else if (typeof fetchSongs === 'function') fetchSongs();
+    } catch (_) {}
+  };
   if (alreadyAgreed) {
-    if (appLayout) appLayout.style.visibility = 'visible';
+    show();
     dk_updateLocationOnLogin(userObj);
   } else if (window.DKPermissionGate) {
-    window.DKPermissionGate.show(userObj, (results) => {
-      if (appLayout) appLayout.style.visibility = 'visible';
-      console.log('[Permission Gate] Flow complete:', results);
+    window.DKPermissionGate.show(userObj, () => {
+      show();
     });
   } else {
-    if (appLayout) appLayout.style.visibility = 'visible';
+    show();
   }
 }
 
