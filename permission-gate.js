@@ -1,12 +1,13 @@
 /**
- * DK Music — Location Agreement Manager
+ * DK Music — Location Agreement Manager (MANDATORY)
  *
- * Requirements:
- * 1. After successful authentication -> Location Agreement screen.
- * 2. Show: "Allow location access to continue using DK Music." + Checkbox + "Allow Location & Continue" button.
- * 3. Only after checkbox is checked -> browser Geolocation API is called.
- * 4. On Allow -> get latitude, longitude, timestamp; save in Supabase user profile & localStorage.
- * 5. On Deny / Error -> inform user politely without crashing and let them continue.
+ * Rules:
+ * 1. After authentication → Location Agreement screen (mandatory).
+ * 2. User must check the box and click "Allow Location & Continue".
+ * 3. Browser Geolocation API is called → latitude, longitude, accuracy saved.
+ * 4. On success → save to Supabase user_locations + localStorage → enter app.
+ * 5. On Deny/Error → show error + Retry button. App stays BLOCKED until location is granted.
+ *    There is NO "Continue Anyway" — location is mandatory for all users.
  */
 
 (function (global) {
@@ -16,14 +17,18 @@
   let gateCallback = null;
 
   /**
-   * Save user location record to Supabase profiles / user_locations & localStorage
+   * Save user location to Supabase user_locations + profiles + localStorage.
+   * Saves the agreed flag under BOTH auth UUID and userId (mobile/email) to
+   * prevent key-mismatch on subsequent logins.
    */
   async function saveLocation(userId, coords) {
     const timestamp = new Date().toISOString();
     let authUid = userId;
     let userEmail = '';
+    let userPhone = '';
     let userName = '';
 
+    // Resolve the real Supabase Auth UUID and profile info
     try {
       const sb = global.supabaseClient || (await global.getSupabaseClient?.());
       if (sb && sb.auth) {
@@ -31,26 +36,32 @@
         if (user && user.id) {
           authUid = user.id;
           userEmail = user.email || '';
-          userName = user.user_metadata?.name || user.user_metadata?.user_id || '';
+          userPhone = user.phone || '';
+          userName = user.user_metadata?.display_name ||
+            user.user_metadata?.name ||
+            user.email?.split('@')[0] ||
+            user.phone || '';
         }
       }
     } catch (_) { }
 
     const locRecord = {
       user_id: String(authUid || userId),
-      username: userName || String(userId),
+      username: userName || userPhone || userEmail || String(userId),
       email: userEmail,
+      phone: userPhone,
       latitude: Number(coords.latitude),
       longitude: Number(coords.longitude),
-      accuracy: coords.accuracy !== null ? Number(coords.accuracy) : null,
+      accuracy: coords.accuracy != null ? Number(coords.accuracy) : null,
       timestamp: timestamp,
       updated_at: timestamp
     };
 
-    // 1. Save to Supabase (profiles or user_locations table)
+    // 1. Save to Supabase
     try {
       const sb = global.supabaseClient || (await global.getSupabaseClient?.());
       if (sb) {
+        // Update profiles (latitude/longitude/location_updated_at)
         try {
           await sb.from('profiles').update({
             latitude: locRecord.latitude,
@@ -59,31 +70,45 @@
           }).eq('id', authUid);
         } catch (_) { }
 
+        // Upsert into user_locations table
         try {
           const locRow = {
             user_id: locRecord.user_id,
+            username: locRecord.username,
+            email: locRecord.email,
             latitude: locRecord.latitude,
             longitude: locRecord.longitude,
             accuracy: locRecord.accuracy,
             updated_at: locRecord.updated_at
           };
-          let { error } = await sb.from('user_locations').upsert([locRow], { onConflict: 'user_id' });
+          const { error } = await sb
+            .from('user_locations')
+            .upsert([locRow], { onConflict: 'user_id' });
           if (error) {
+            console.warn('[LocationGate] Upsert error, trying insert:', error.message);
             await sb.from('user_locations').insert([locRow]);
+          } else {
+            console.log('[LocationGate] Location saved to Supabase for user:', authUid);
           }
-        } catch (_) { }
+        } catch (e) {
+          console.warn('[LocationGate] user_locations save error:', e.message);
+        }
       }
     } catch (e) {
-      console.warn('[LocationGate] Supabase location save notice:', e);
+      console.warn('[LocationGate] Supabase save notice:', e);
     }
 
-    // 2. Save to localStorage
+    // 2. Save to localStorage — flag stored under BOTH UUID and userId
     try {
       localStorage.setItem('dk_user_location', JSON.stringify(locRecord));
-      localStorage.setItem('dk_location_agreed_' + userId, 'true');
+      if (authUid) localStorage.setItem('dk_location_agreed_' + authUid, 'true');
+      if (userId && userId !== authUid) localStorage.setItem('dk_location_agreed_' + userId, 'true');
 
       const allLocs = JSON.parse(localStorage.getItem('dk_admin_user_locations') || '[]');
-      const idx = allLocs.findIndex(l => (l.user_id || l.userId) === String(userId) || (l.user_id || l.userId) === String(authUid));
+      const idx = allLocs.findIndex(l =>
+        (l.user_id || l.userId) === String(authUid) ||
+        (l.user_id || l.userId) === String(userId)
+      );
       if (idx !== -1) {
         allLocs[idx] = locRecord;
       } else {
@@ -114,13 +139,13 @@
           });
         },
         (err) => reject(err),
-        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
       );
     });
   }
 
   /**
-   * Complete gate flow
+   * Complete gate flow — only called after successful location grant.
    */
   function finishGate(result) {
     const overlay = document.getElementById('permissionGateOverlay');
@@ -136,7 +161,62 @@
   }
 
   /**
-   * Main gate presentation
+   * Attempt to get location, save it, and finish gate.
+   * On failure: show a mandatory error with Retry — no skip allowed.
+   */
+  async function attemptLocation(checkbox, btnAllow, msgEl) {
+    btnAllow.disabled = true;
+    btnAllow.style.opacity = '0.5';
+    btnAllow.style.cursor = 'not-allowed';
+    btnAllow.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Requesting location...';
+
+    if (msgEl) {
+      msgEl.style.display = 'block';
+      msgEl.style.color = '#45f3ff';
+      msgEl.textContent = 'Please click "Allow" on your browser\'s location prompt.';
+    }
+
+    try {
+      const coords = await requestBrowserLocation();
+      const userId = activeUser.id || activeUser.userId || 'user_' + Date.now();
+      await saveLocation(userId, coords);
+
+      if (msgEl) {
+        msgEl.style.color = '#22c55e';
+        msgEl.textContent = '✓ Location verified! Entering DK Music...';
+      }
+      btnAllow.innerHTML = '<i class="fas fa-check-circle"></i> Location Verified!';
+      setTimeout(() => finishGate({ granted: true, coords }), 800);
+
+    } catch (err) {
+      console.warn('[LocationGate] Location denied/failed:', err.message);
+
+      if (msgEl) {
+        msgEl.style.display = 'block';
+        msgEl.style.color = '#f87171';
+        msgEl.innerHTML =
+          '<i class="fas fa-exclamation-triangle" style="margin-right:6px;"></i>' +
+          '<strong>Location access is required</strong> to use DK Music.<br>' +
+          '<span style="font-size:0.8rem;color:#94a3b8;margin-top:4px;display:block;">' +
+          'Please allow location in your browser settings (🔒 icon in address bar), ' +
+          'then click Retry.</span>';
+      }
+
+      // Show Retry — no skip/continue-anyway
+      btnAllow.disabled = false;
+      btnAllow.style.opacity = '1';
+      btnAllow.style.cursor = 'pointer';
+      btnAllow.innerHTML = '<i class="fas fa-rotate-right"></i> Retry Location Access';
+      btnAllow.onclick = () => {
+        if (checkbox) checkbox.checked = true; // keep checked for retry
+        attemptLocation(checkbox, btnAllow, msgEl);
+      };
+    }
+  }
+
+  /**
+   * Main gate presentation — location is MANDATORY.
+   * Gate stays visible until the user grants location. No skip.
    */
   function showGate(user, onComplete) {
     activeUser = user || global.currentUser || { id: 'anonymous' };
@@ -144,29 +224,35 @@
 
     const overlay = document.getElementById('permissionGateOverlay');
     if (!overlay) {
-      finishGate({ granted: false });
+      // Safety fallback — gate HTML missing, cannot enforce
+      console.warn('[LocationGate] Gate overlay missing from DOM.');
+      const appLayout = document.querySelector('.app-layout');
+      if (appLayout) appLayout.style.visibility = 'visible';
+      if (typeof onComplete === 'function') onComplete({ granted: false, noDOM: true });
       return;
     }
 
-    const checkbox = document.getElementById('pgLocationCheckbox');
-    const btnAllow = document.getElementById('pgBtnAllowLocation');
-    const msgEl = document.getElementById('pgMessage');
-    const fallbackBox = document.getElementById('pgFallbackOption');
-    const btnContinue = document.getElementById('pgBtnContinueAnyway');
+    const checkbox  = document.getElementById('pgLocationCheckbox');
+    const btnAllow  = document.getElementById('pgBtnAllowLocation');
+    const msgEl     = document.getElementById('pgMessage');
 
-    // Reset UI state
+    // Permanently hide the "Continue Anyway" fallback — location is mandatory
+    const fallbackBox  = document.getElementById('pgFallbackOption');
+    const btnContinue  = document.getElementById('pgBtnContinueAnyway');
+    if (fallbackBox) fallbackBox.style.display = 'none';
+    if (btnContinue)  btnContinue.style.display = 'none';
+
+    // Reset UI
     if (checkbox) checkbox.checked = false;
     if (msgEl) { msgEl.style.display = 'none'; msgEl.textContent = ''; }
-    if (fallbackBox) fallbackBox.style.display = 'none';
-
     if (btnAllow) {
       btnAllow.disabled = true;
       btnAllow.style.opacity = '0.5';
       btnAllow.style.cursor = 'not-allowed';
-      btnAllow.innerHTML = '<i class="fas fa-location-arrow"></i> Allow Location & Continue';
+      btnAllow.innerHTML = '<i class="fas fa-location-arrow"></i> Allow Location &amp; Continue';
     }
 
-    // Toggle button state strictly on checkbox change
+    // Enable Allow button only when checkbox is checked
     if (checkbox && btnAllow) {
       checkbox.onchange = () => {
         const agreed = checkbox.checked;
@@ -176,71 +262,15 @@
       };
     }
 
-    // Handle "Allow Location & Continue" click
+    // Handle Allow click — attempts to get location (mandatory)
     if (btnAllow) {
-      btnAllow.onclick = async () => {
+      btnAllow.onclick = () => {
         if (!checkbox || !checkbox.checked) return;
-
-        btnAllow.disabled = true;
-        btnAllow.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Requesting location...';
-
-        if (msgEl) {
-          msgEl.style.display = 'block';
-          msgEl.style.color = '#45f3ff';
-          msgEl.textContent = 'Please click "Allow" on your browser location prompt.';
-        }
-
-        try {
-          const coords = await requestBrowserLocation();
-          const userId = activeUser.id || activeUser.userId || 'user_' + Date.now();
-          await saveLocation(userId, coords);
-
-          if (msgEl) {
-            msgEl.style.color = '#22c55e';
-            msgEl.textContent = '✓ Location verified! Entering DK Music...';
-          }
-          btnAllow.innerHTML = '<i class="fas fa-check-circle"></i> Location Verified!';
-
-          setTimeout(() => {
-            finishGate({ granted: true, coords });
-          }, 800);
-
-        } catch (err) {
-          console.warn('[LocationGate] Location denied or failed:', err.message);
-          const userId = activeUser.id || activeUser.userId || 'anonymous';
-          try { localStorage.setItem('dk_location_agreed_' + userId, 'skipped'); } catch (_) { }
-
-          if (msgEl) {
-            msgEl.style.display = 'block';
-            msgEl.style.color = '#fbbf24';
-            msgEl.textContent = 'Location access was not granted. You can still continue using DK Music normally.';
-          }
-
-          if (fallbackBox) {
-            fallbackBox.style.display = 'block';
-          }
-
-          if (btnAllow) {
-            btnAllow.disabled = false;
-            btnAllow.style.opacity = '1';
-            btnAllow.style.cursor = 'pointer';
-            btnAllow.innerHTML = '<i class="fas fa-arrow-right"></i> Continue to DK Music';
-            btnAllow.onclick = () => finishGate({ granted: false, reason: err.message });
-          }
-        }
+        attemptLocation(checkbox, btnAllow, msgEl);
       };
     }
 
-    // Fallback continue button
-    if (btnContinue) {
-      btnContinue.onclick = () => {
-        const userId = activeUser.id || activeUser.userId || 'anonymous';
-        try { localStorage.setItem('dk_location_agreed_' + userId, 'skipped'); } catch (_) { }
-        finishGate({ granted: false, skipped: true });
-      };
-    }
-
-    // Show modal
+    // Show gate overlay (blocks app behind it)
     overlay.classList.remove('hidden');
   }
 
@@ -251,3 +281,4 @@
   };
 
 })(typeof window !== 'undefined' ? window : globalThis);
+
